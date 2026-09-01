@@ -199,7 +199,7 @@ private fun LocationRow(
         },
         supportingContent = {
             Text(
-                text = pluralStringResource(boxCount, R.plurals.box_count, boxCount),
+                text = pluralStringResource(R.plurals.box_count, boxCount, boxCount),
                 style = MaterialTheme.typography.bodyMedium,
             )
         },

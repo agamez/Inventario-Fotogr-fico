@@ -236,7 +236,7 @@ private fun BoxRow(
         },
         supportingContent = {
             Text(
-                text = pluralStringResource(entry.photoCount, R.plurals.photo_count, entry.photoCount),
+                text = pluralStringResource(R.plurals.photo_count, entry.photoCount, entry.photoCount),
                 style = MaterialTheme.typography.bodyMedium,
             )
         },

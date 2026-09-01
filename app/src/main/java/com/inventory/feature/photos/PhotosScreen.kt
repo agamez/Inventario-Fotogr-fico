@@ -146,9 +146,9 @@ fun PhotosScreen(
                         title = {
                             Text(
                                 pluralStringResource(
-                                    selectedCount,
-                                    R.plurals.selected_count,
-                                    selectedCount,
+ R.plurals.selected_count,
+ selectedCount,
+ selectedCount,
                                 ),
                             )
                         },
