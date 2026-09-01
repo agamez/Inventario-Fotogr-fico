@@ -26,4 +26,26 @@
         <item quantity="one">1 box</item>
         <item quantity="other">%1$d boxes</item>
     </plurals>
+
+    <!-- Boxes screen -->
+    <string name="empty_boxes">No boxes yet.\nTap + to create your first box.</string>
+    <string name="add_box">Add box</string>
+    <string name="rename_box">Rename box</string>
+    <string name="box_name_label">Name</string>
+    <string name="box_options">Box options</string>
+    <string name="move_box_to_location">Move to location</string>
+    <string name="no_other_locations">There are no other locations to move this box to. Create another location first.</string>
+    <string name="box_created">Box created</string>
+    <string name="box_saved">Box saved</string>
+    <string name="box_deleted">Box deleted</string>
+    <string name="box_moved">Box moved</string>
+    <string name="delete_box_title">Delete box?</string>
+    <string name="delete_box_message">The box \"%1$s\" will be permanently deleted along with the photos it contains (%2$d). This cannot be undone.</string>
+    <string name="navigate_back">Back</string>
+    <string name="location_fallback_title">Boxes</string>
+
+    <plurals name="photo_count">
+        <item quantity="one">1 photo</item>
+        <item quantity="other">%1$d photos</item>
+    </plurals>
 </resources>
