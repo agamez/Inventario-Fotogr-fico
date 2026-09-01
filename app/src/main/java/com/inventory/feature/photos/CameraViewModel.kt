@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.R
+import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +29,7 @@ import kotlinx.coroutines.withContext
 class CameraViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: PhotoRepository,
+    private val messageBus: UserMessageBus,
 ) : ViewModel() {
 
     /** Id of the box the photo will be stored in; supplied by the nav route. */
@@ -57,8 +59,10 @@ class CameraViewModel @Inject constructor(
 
     /**
      * Stores the pending frame in [boxId]; on success the pending image is
-     * cleared and the screen is asked to navigate back. An undecodable frame
-     * is dropped so the user can retake it.
+     * cleared, [R.string.photo_added] is posted to the app-level
+     * [UserMessageBus] (the photos grid shows the snackbar when it returns)
+     * and the screen is asked to navigate back. An undecodable frame is
+     * dropped so the user can retake it.
      */
     fun save(rawDescription: String, rawNote: String?) {
         val bytes = _pending.value ?: return
@@ -69,6 +73,7 @@ class CameraViewModel @Inject constructor(
             when (outcome) {
                 PhotoRepository.AddOutcome.Success -> {
                     _pending.value = null
+                    messageBus.post(R.string.photo_added)
                     _events.send(CameraEvent.NavigateBack)
                 }
                 PhotoRepository.AddOutcome.BlankDescription ->

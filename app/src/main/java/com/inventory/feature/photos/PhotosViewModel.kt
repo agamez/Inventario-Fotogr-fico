@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import com.inventory.R
 import com.inventory.database.BoxEntity
 import com.inventory.database.PhotoEntity
+import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -43,6 +44,7 @@ class PhotosViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: PhotoRepository,
     @ApplicationContext private val context: Context,
+    private val messageBus: UserMessageBus,
 ) : ViewModel() {
 
     /** Id of the box whose photos are shown; supplied by the nav route. */
@@ -112,6 +114,16 @@ class PhotosViewModel @Inject constructor(
 
     private val _events = Channel<PhotosEvent>(Channel.BUFFERED)
     val events: Flow<PhotosEvent> = _events.receiveAsFlow()
+
+    init {
+        // Cross-screen announcements (e.g. the camera save) arrive on the
+        // app-level bus; this ViewModel outlives the camera screen in the
+        // back stack, and the buffered channel delivers them to the snackbar
+        // once the grid recomposes after the pop.
+        viewModelScope.launch {
+            messageBus.messages.collect { sendEvent(it) }
+        }
+    }
 
     fun onSearchQueryChange(query: String) {
         _searchQuery.value = query

@@ -224,7 +224,6 @@ def setup_gallery_images():
            f"--bind _data:s:{path} --bind mime_type:s:image/jpeg")
     return True
 
-JPEG_1PX = JPEG_1PX  # placeholder merge; real def below
 
 def start_app(fresh=False):
     if fresh: sh(f"pm clear {PKG}")
@@ -432,9 +431,7 @@ def t_camera():
     check("save sheet after capture", wait_for(text="Description (required)", timeout=8) is not None)
     f = edit_texts(); tap(f[0]); wait_ime(); type_text("Toolbox lid"); hide_ime(); time.sleep(0.8)
     tap_text("Save")
-    # NOTE: the camera save path returns to the grid without a snackbar
-    # (gallery flow announces "Photo added", camera flow stays silent) —
-    # the grid tile is the functional assertion here.
+    check("camera photo saved snackbar", snackbar_visible("Photo added", timeout=8))
     check("camera photo in grid", wait_for(text="Toolbox lid", timeout=8) is not None)
     back(); back(); time.sleep(1.0)
 
