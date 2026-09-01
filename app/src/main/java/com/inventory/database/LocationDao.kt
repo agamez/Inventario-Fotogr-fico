@@ -35,4 +35,7 @@ interface LocationDao {
 
     @Update
     suspend fun update(location: LocationEntity)
+
+    @Query("DELETE FROM locations WHERE id = :id")
+    suspend fun deleteById(id: Long)
 }

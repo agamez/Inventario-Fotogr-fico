@@ -1,4 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Photo Inventory</string>
+
+    <!-- Locations screen -->
+    <string name="title_locations">Locations</string>
+    <string name="add_location">Add location</string>
+    <string name="rename_location">Rename location</string>
+    <string name="location_name_label">Name</string>
+    <string name="location_options">Location options</string>
+    <string name="save">Save</string>
+    <string name="cancel">Cancel</string>
+    <string name="rename">Rename</string>
+    <string name="delete">Delete</string>
+    <string name="delete_location_title">Delete location?</string>
+    <string name="delete_location_message">The location \"%1$s\" will be removed. This cannot be undone.</string>
+    <string name="empty_locations">No locations yet.\nTap + to create your first location.</string>
+    <string name="location_created">Location created</string>
+    <string name="location_saved">Location saved</string>
+    <string name="location_deleted">Location deleted</string>
+    <string name="error_blank_name">Name cannot be blank</string>
+    <string name="error_duplicate_name">A location with this name already exists</string>
+    <string name="error_location_has_boxes">This location still has boxes. Move or delete them first.</string>
+
+    <plurals name="box_count">
+        <item quantity="one">1 box</item>
+        <item quantity="other">%1$d boxes</item>
+    </plurals>
 </resources>
