@@ -21,6 +21,9 @@ sealed class Screens(val route: String) {
     /** Camera capture screen, saving into a given box. */
     data object Camera : Screens(route = "camera/{$ARG_BOX_ID}")
 
+    /** Global search across every photo, box and location. */
+    data object Search : Screens(route = "search")
+
     companion object {
         const val ARG_LOCATION_ID = "locationId"
         const val ARG_BOX_ID = "boxId"

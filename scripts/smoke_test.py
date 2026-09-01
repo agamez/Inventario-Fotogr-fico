@@ -461,6 +461,38 @@ def t_selection_delete_and_db():
     check("db: box names", box_names == ["Tools", "Winter"], str(box_names))
     back(); back()
 
+def t_global_search():
+    print("\n== Global search ==")
+    # End state from earlier scenarios: 'Winter jackets x2' and 'Toolbox lid'
+    # live in box 'Winter' inside location 'Garage' ('Old skis' was deleted by
+    # t_selection_delete_and_db, so the narrowing query is 'lid', which matches
+    # only 'Toolbox lid').
+    tap_desc("Search all items")
+    check("search screen opens", wait_for(text="All items, newest first", timeout=6) is not None)
+    check("browse mode lists items", wait_for(text="Winter jackets x2", timeout=6) is not None)
+    f = wait_for(text="Search all photos")
+    if f is None: return check("search field appears", False)
+    tap(f); wait_ime(); type_text("lid"); time.sleep(1.5)
+    d = dump()
+    check("search narrows to Toolbox lid",
+          bool(find_all(d, text="Toolbox lid")) and not find_all(d, text="Winter jackets x2"))
+    check("result shows Winter · Garage", wait_for(text="Winter · Garage", timeout=6) is not None)
+    check("tap jumps to box grid", tap_text("Toolbox lid", timeout=6))
+    check("Winter grid lists sibling item", wait_for(text="Winter jackets x2", timeout=6) is not None)
+    # back to search: query must survive on the back stack; make sure the
+    # IME cannot eat the navigation BACK.
+    if "mInputShown=true" in sh("dumpsys input_method"):
+        hide_ime(); time.sleep(0.5)
+    back(); time.sleep(1.2)
+    check("query retained after back", bool(find_all(dump(), text="Toolbox lid")))
+    check("clear icon returns to browse", tap_desc("Clear search", timeout=5))
+    check("browse caption back", wait_for(text="All items, newest first", timeout=6) is not None)
+    f2 = wait_for(text="Search all photos")
+    if f2 is None: return check("search field refocusable", False)
+    tap(f2); wait_ime(); type_text("zzznope"); time.sleep(1.5)
+    check("no-results state", wait_for(text="No photos match", timeout=6) is not None)
+    hide_ime(); back(); time.sleep(0.6)  # leave the search screen
+
 def main():
     global SERIAL
     out = adb("devices").stdout
@@ -480,6 +512,7 @@ def main():
     t_multiselect_move()
     t_camera()
     t_selection_delete_and_db()
+    t_global_search()
     print(f"\n===== {passed} passed, {failed} failed, {len(warnings)} warnings =====")
     if warnings: print("Warnings:", *["  - " + w for w in warnings], sep="\n")
     if failures:

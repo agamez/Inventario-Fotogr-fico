@@ -20,6 +20,27 @@ interface PhotoDao {
     @Query("SELECT * FROM photos WHERE id = :id")
     fun observePhoto(id: Long): Flow<PhotoEntity?>
 
+    /**
+     * Global search across every box and location, newest first, capped at
+     * 100 rows; a blank [query] browses everything. Matches the description
+     * only — SQLite LIKE is case-insensitive for ASCII, consistent with
+     * [observePhotosForBox]. The projection omits the image BLOB on
+     * purpose, and the LEFT JOINs keep detached photos (null `boxId`)
+     * visible with null box/location names.
+     */
+    @Query(
+        "SELECT photos.id AS photoId, photos.boxId AS boxId, " +
+            "photos.description AS description, photos.note AS note, " +
+            "photos.createdAt AS createdAt, " +
+            "boxes.name AS boxName, locations.name AS locationName " +
+            "FROM photos " +
+            "LEFT JOIN boxes ON photos.boxId = boxes.id " +
+            "LEFT JOIN locations ON boxes.locationId = locations.id " +
+            "WHERE :query = '' OR photos.description LIKE '%' || :query || '%' " +
+            "ORDER BY photos.createdAt DESC LIMIT 100",
+    )
+    fun searchAll(query: String): Flow<List<PhotoSearchResult>>
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insert(photo: PhotoEntity): Long
 

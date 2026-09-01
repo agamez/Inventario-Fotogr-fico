@@ -4,6 +4,7 @@ import com.inventory.database.BoxDao
 import com.inventory.database.BoxEntity
 import com.inventory.database.PhotoDao
 import com.inventory.database.PhotoEntity
+import com.inventory.database.PhotoSearchResult
 import com.inventory.image.ImageUtils
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -38,6 +39,14 @@ class PhotoRepository @Inject constructor(
 
     /** Live list of every box; feeds the move-to-box picker. */
     fun observeAllBoxes(): Flow<List<BoxEntity>> = boxDao.observeAllBoxes()
+
+    /**
+     * Global description search across every box and location (blank
+     * [query] browses everything), newest first, capped at 100 rows by
+     * the DAO; results carry no image payload.
+     */
+    fun searchAll(query: String): Flow<List<PhotoSearchResult>> =
+        photoDao.searchAll(query)
 
     /**
      * Normalizes [imageBytes] and inserts it into [boxId] after

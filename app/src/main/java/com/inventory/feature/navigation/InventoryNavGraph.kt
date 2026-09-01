@@ -12,9 +12,11 @@ import com.inventory.feature.boxes.BoxesScreen
 import com.inventory.feature.locations.LocationsScreen
 import com.inventory.feature.photos.CameraCaptureScreen
 import com.inventory.feature.photos.PhotosScreen
+import com.inventory.feature.search.SearchScreen
 
 /**
- * Root navigation graph connecting Locations -> Boxes -> Photos -> Camera.
+ * Root navigation graph connecting Locations -> Boxes -> Photos -> Camera,
+ * plus the global Search screen reached from the Locations app bar.
  */
 @Composable
 fun InventoryNavGraph(
@@ -30,6 +32,18 @@ fun InventoryNavGraph(
             LocationsScreen(
                 onOpenLocation = { locationId ->
                     navController.navigate(Screens.buildBoxesRoute(locationId))
+                },
+                onOpenSearch = {
+                    navController.navigate(Screens.Search.route)
+                },
+            )
+        }
+
+        composable(route = Screens.Search.route) {
+            SearchScreen(
+                onBack = { navController.popBackStack() },
+                onOpenPhoto = { boxId ->
+                    navController.navigate(Screens.buildPhotosRoute(boxId))
                 },
             )
         }

@@ -87,4 +87,13 @@
         <item quantity="one">1 selected</item>
         <item quantity="other">%1$d selected</item>
     </plurals>
+
+    <!-- Global search screen -->
+    <string name="title_search">Search</string>
+    <string name="open_search">Search all items</string>
+    <string name="search_hint">Search all photos</string>
+    <string name="search_all_caption">All items, newest first. Type to search.</string>
+    <string name="search_result_location">%1$s · %2$s</string>
+    <string name="search_no_box">Not in any box</string>
+    <string name="search_showing_first_100">Showing the first 100 results. Refine your search to narrow it down.</string>
 </resources>

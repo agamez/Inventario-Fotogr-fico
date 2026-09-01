@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,13 +60,15 @@ import com.inventory.database.LocationWithBoxes
  * Master list of storage locations.
  *
  * Navigation is owned by the caller: tapping a row invokes [onOpenLocation]
- * with the location id. Rename and Delete are offered per row through an
+ * with the location id, and the app-bar search icon invokes
+ * [onOpenSearch]. Rename and Delete are offered per row through an
  * overflow menu (trailing ⋮ or long-press).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocationsScreen(
     onOpenLocation: (Long) -> Unit,
+    onOpenSearch: () -> Unit,
     viewModel: LocationsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -90,6 +93,14 @@ fun LocationsScreen(
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.title_locations)) },
+                actions = {
+                    IconButton(onClick = onOpenSearch) {
+                        Icon(
+                            imageVector = Icons.Filled.Search,
+                            contentDescription = stringResource(R.string.open_search),
+                        )
+                    }
+                },
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
