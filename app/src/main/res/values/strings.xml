@@ -19,7 +19,7 @@
     <string name="location_saved">Location saved</string>
     <string name="location_deleted">Location deleted</string>
     <string name="error_blank_name">Name cannot be blank</string>
-    <string name="error_duplicate_name">A location with this name already exists</string>
+    <string name="error_duplicate_name">An item with this name already exists</string>
     <string name="error_location_has_boxes">This location still has boxes. Move or delete them first.</string>
 
     <plurals name="box_count">
@@ -47,5 +47,44 @@
     <plurals name="photo_count">
         <item quantity="one">1 photo</item>
         <item quantity="other">%1$d photos</item>
+    </plurals>
+
+    <!-- Photos screen -->
+    <string name="box_fallback_title">Photos</string>
+    <string name="add_photos">Add photos</string>
+    <string name="take_photo">Take photo</string>
+    <string name="choose_from_gallery">Choose from gallery</string>
+    <string name="photo_description_required_label">Description (required)</string>
+    <string name="photo_note_label">Note (optional)</string>
+    <string name="save_photo">Save photo</string>
+    <string name="search_photos">Search photos</string>
+    <string name="search_toggle">Toggle search</string>
+    <string name="clear_search">Clear search</string>
+    <string name="no_photos">No photos yet.\nTap + to add the first one.</string>
+    <string name="no_search_results">No photos match your search.</string>
+    <string name="selection_exit">Exit selection</string>
+    <string name="selection_move">Move selected photos</string>
+    <string name="selection_delete">Delete selected photos</string>
+    <string name="move_photos_to_box">Move to box</string>
+    <string name="no_other_boxes">There are no other boxes to move photos to. Create another box first.</string>
+    <string name="delete_photos_confirm">%1$d photo(s) will be permanently deleted. This cannot be undone.</string>
+    <string name="delete_photo_title">Delete photo?</string>
+    <string name="delete_photo_message">The photo \"%1$s\" will be permanently deleted. This cannot be undone.</string>
+    <string name="close_preview">Close preview</string>
+    <string name="photos_pending_count">%1$d more photos waiting</string>
+    <string name="photo_added">Photo added</string>
+    <string name="photo_deleted">Photo deleted</string>
+    <string name="photo_saved">Photo saved</string>
+    <string name="photos_moved">%1$d photo(s) moved</string>
+    <string name="error_blank_description">Description cannot be blank</string>
+    <string name="error_invalid_image">This image could not be processed. Try another one.</string>
+    <string name="error_camera">The camera could not capture a photo. Please try again.</string>
+    <string name="camera_permission_rationale">Photo Inventory uses the camera to take pictures of your items. Grant camera access to add photos this way.</string>
+    <string name="grant_permission">Grant permission</string>
+    <string name="open_settings">Open settings</string>
+
+    <plurals name="selected_count">
+        <item quantity="one">1 selected</item>
+        <item quantity="other">%1$d selected</item>
     </plurals>
 </resources>
