@@ -139,13 +139,22 @@ class LocationsViewModel @Inject constructor(
         }
     }
 
-    /** Stores the pending cover; the row refreshes through the live query. */
+    /**
+     * Stores the pending cover; the row refreshes through the live query.
+     * An undecodable pick surfaces as [R.string.error_invalid_image]
+     * instead of crashing; the pending image is cleared either way.
+     */
     fun confirmCoverUpload() {
         val pending = _pendingCover.value ?: return
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.setCoverImage(pending.locationId, pending.bytes) }
-            _pendingCover.value = null
-            sendEvent(R.string.cover_updated)
+            try {
+                withContext(Dispatchers.IO) { repository.setCoverImage(pending.locationId, pending.bytes) }
+                _pendingCover.value = null
+                sendEvent(R.string.cover_updated)
+            } catch (exception: IllegalArgumentException) {
+                _pendingCover.value = null
+                sendEvent(R.string.error_invalid_image)
+            }
         }
     }
 

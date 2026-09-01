@@ -67,21 +67,28 @@ class CoverCaptureViewModel @Inject constructor(
     /**
      * Stores the pending frame as the target's cover. Success clears the
      * pending image, announces [R.string.cover_updated] on the bus and
-     * navigates back; an unknown target is a programming error.
+     * navigates back. An undecodable frame clears the pending image and
+     * announces [R.string.error_invalid_image] instead, staying on the
+     * screen so the user can retry.
      */
     fun save() {
         val bytes = _pending.value ?: return
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                when (target) {
-                    "box" -> boxRepository.setCoverImage(targetId, bytes)
-                    "location" -> locationRepository.setCoverImage(targetId, bytes)
-                    else -> throw IllegalArgumentException("Unknown cover target '$target'.")
+            try {
+                withContext(Dispatchers.IO) {
+                    when (target) {
+                        "box" -> boxRepository.setCoverImage(targetId, bytes)
+                        "location" -> locationRepository.setCoverImage(targetId, bytes)
+                        else -> throw IllegalArgumentException("Unknown cover target '$target'.")
+                    }
                 }
+                _pending.value = null
+                messageBus.post(R.string.cover_updated)
+                _events.send(CoverCaptureEvent.NavigateBack)
+            } catch (exception: IllegalArgumentException) {
+                _pending.value = null
+                messageBus.post(R.string.error_invalid_image)
             }
-            _pending.value = null
-            messageBus.post(R.string.cover_updated)
-            _events.send(CoverCaptureEvent.NavigateBack)
         }
     }
 }

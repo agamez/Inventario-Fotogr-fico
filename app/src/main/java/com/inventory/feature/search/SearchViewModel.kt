@@ -19,8 +19,8 @@ import kotlinx.coroutines.flow.stateIn
 /**
  * Presents the global search over every photo in the database, regardless
  * of which box or location it lives in. A blank query browses all items
- * (newest first); any non-blank query filters by description. The DAO caps
- * results at 100 rows.
+ * (newest first); any non-blank query filters by description or note. The
+ * DAO caps results at 100 rows.
  *
  * The screen is read-only — no mutations, hence no one-shot event channel
  * as the CRUD features have — so everything it needs lives in [uiState].
@@ -59,4 +59,7 @@ class SearchViewModel @Inject constructor(
     fun onQueryChange(query: String) {
         _query.value = query
     }
+
+    /** Thumbnail blob for [photoId], loaded lazily per visible result row. */
+    suspend fun imageFor(photoId: Long): ByteArray? = repository.imageById(photoId)
 }

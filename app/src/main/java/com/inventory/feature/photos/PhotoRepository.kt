@@ -41,12 +41,19 @@ class PhotoRepository @Inject constructor(
     fun observeAllBoxes(): Flow<List<BoxEntity>> = boxDao.observeAllBoxes()
 
     /**
-     * Global description search across every box and location (blank
-     * [query] browses everything), newest first, capped at 100 rows by
-     * the DAO; results carry no image payload.
+     * Global search across descriptions and notes of every box and
+     * location (blank [query] browses everything), newest first, capped at
+     * 100 rows by the DAO; results carry no image payload.
      */
     fun searchAll(query: String): Flow<List<PhotoSearchResult>> =
         photoDao.searchAll(query)
+
+    /**
+     * Stored JPEG blob of photo [photoId], or null when the row is gone.
+     * Fetches the image column alone so search rows can show thumbnails
+     * without loading whole entities.
+     */
+    suspend fun imageById(photoId: Long): ByteArray? = photoDao.imageById(photoId)
 
     /**
      * Normalizes [imageBytes] and inserts it into [boxId] after

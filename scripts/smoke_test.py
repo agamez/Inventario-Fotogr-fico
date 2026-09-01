@@ -386,6 +386,8 @@ def t_preview_edit():
     check("description prefilled", fields and fields[0].get("text") == "Winter jacket")
     check("note field present", len(fields) >= 2)
     tap(fields[0]); wait_ime(); clear_field(); type_text("Winter jackets x2"); hide_ime(); time.sleep(0.8)
+    # second EditText is the (empty) note; typed for the note-match search later
+    tap(fields[1]); wait_ime(); type_text("check hinges"); hide_ime(); time.sleep(0.8)
     tap_text("Save")
     check("photo saved snackbar", snackbar_visible("Photo saved"))
     check("tile text updated", wait_for(text="Winter jackets x2", timeout=5) is not None)
@@ -487,6 +489,16 @@ def t_global_search():
         hide_ime(); time.sleep(0.5)
     back(); time.sleep(1.2)
     check("query retained after back", bool(find_all(dump(), text="Toolbox lid")))
+    # Note matching: 'Winter jackets x2' carries the note "check hinges"
+    # (typed in t_preview_edit), so "hinge" must surface it and drop
+    # "Toolbox lid", whose description and note contain no "hinge".
+    check("clear icon clears the query", tap_desc("Clear search", timeout=5))
+    fh = wait_for(text="Search all photos")
+    if fh is None: return check("search field refocusable for note search", False)
+    tap(fh); wait_ime(); type_text("hinge"); time.sleep(1.5)
+    d = dump()
+    check("note search surfaces photo", bool(find_all(d, text="Winter jackets x2")))
+    check("note search excludes non-match", not find_all(d, text="Toolbox lid"))
     check("clear icon returns to browse", tap_desc("Clear search", timeout=5))
     check("browse caption back", wait_for(text="All items, newest first", timeout=6) is not None)
     f2 = wait_for(text="Search all photos")

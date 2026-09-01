@@ -6,8 +6,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
@@ -27,16 +29,21 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
 import com.inventory.R
 import com.inventory.database.PhotoSearchResult
 
@@ -45,10 +52,11 @@ private const val SEARCH_RESULT_LIMIT = 100
 
 /**
  * Global search over every item in the database: type to filter by
- * description across all boxes and locations, or leave the field blank to
- * browse everything (newest first). Each row shows where the item lives
- * and, when it lives in a box, tapping jumps to that box's grid via
- * [onOpenPhoto]; detached items stay inert. [onBack] pops this screen.
+ * description or note across all boxes and locations, or leave the field
+ * blank to browse everything (newest first). Each row shows a thumbnail
+ * and where the item lives and, when it lives in a box, tapping jumps to
+ * that box's grid via [onOpenPhoto]; detached items stay inert.
+ * [onBack] pops this screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -144,6 +152,7 @@ fun SearchScreen(
                             ) { result ->
                                 SearchResultRow(
                                     result = result,
+                                    viewModel = viewModel,
                                     onClick = result.boxId?.let { boxId ->
                                         { onOpenPhoto(boxId) }
                                     },
@@ -166,12 +175,19 @@ fun SearchScreen(
     }
 }
 
-/** One search hit: the item's description, its box · location, and a jump. */
+/**
+ * One search hit: a real thumbnail of the item (loaded lazily per visible
+ * row, so blob reads stay bounded), its description, its box · location,
+ * and a jump.
+ */
 @Composable
 private fun SearchResultRow(
     result: PhotoSearchResult,
+    viewModel: SearchViewModel,
     onClick: (() -> Unit)?,
 ) {
+    var cover by remember(result.photoId) { mutableStateOf<ByteArray?>(null) }
+    LaunchedEffect(result.photoId) { cover = viewModel.imageFor(result.photoId) }
     ListItem(
         modifier = Modifier
             .fillMaxWidth()
@@ -200,10 +216,22 @@ private fun SearchResultRow(
             )
         },
         leadingContent = {
-            Icon(
-                imageVector = Icons.Outlined.Image,
-                contentDescription = null,
-            )
+            val bytes = cover
+            if (bytes != null) {
+                AsyncImage(
+                    model = bytes,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Outlined.Image,
+                    contentDescription = null,
+                )
+            }
         },
     )
     HorizontalDivider()
