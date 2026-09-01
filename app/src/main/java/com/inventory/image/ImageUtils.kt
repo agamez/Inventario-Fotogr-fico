@@ -9,14 +9,18 @@ import kotlin.math.roundToInt
  * Normalize/compress pipeline for every captured or picked image.
  *
  * [normalizeToJpegBlob] is the single choke point all image bytes pass
- * through before being stored in the `photos.image` BLOB column, keeping
- * the database small and memory-friendly. Callers must run it off the
+ * through before being stored in a Room BLOB column (item photos and the
+ * location/box cover photos), keeping the database small and
+ * memory-friendly. Callers must run it off the
  * main thread (e.g. with `withContext(Dispatchers.IO)`).
  */
 object ImageUtils {
 
     /** Largest allowed dimension (width or height) in pixels. */
     const val MAX_DIMENSION_PX = 1600
+
+    /** Max dimension for location/box cover photos, which render as small thumbnails. */
+    const val COVER_MAX_DIMENSION_PX = 800
 
     /** JPEG quality the compression loop starts at. */
     const val INITIAL_JPEG_QUALITY = 85
@@ -31,14 +35,17 @@ object ImageUtils {
 
     /**
      * Decodes [input], downsamples/scales it so neither dimension exceeds
-     * [MAX_DIMENSION_PX], and re-encodes it as JPEG, lowering quality until
+     * [maxDimensionPx], and re-encodes it as JPEG, lowering quality until
      * the output fits within [MAX_BLOB_BYTES] (or [MIN_JPEG_QUALITY] is hit).
      *
      * @throws IllegalArgumentException if [input] is empty or cannot be
      * decoded as an image (the feature layer converts this into a
      * user-facing error).
      */
-    fun normalizeToJpegBlob(input: ByteArray): ByteArray {
+    fun normalizeToJpegBlob(
+        input: ByteArray,
+        maxDimensionPx: Int = MAX_DIMENSION_PX,
+    ): ByteArray {
         require(input.isNotEmpty()) { "Image data is empty; nothing to normalize." }
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -50,7 +57,7 @@ object ImageUtils {
         }
 
         val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = computeInSampleSize(bounds.outWidth, bounds.outHeight)
+            inSampleSize = computeInSampleSize(bounds.outWidth, bounds.outHeight, maxDimensionPx)
         }
         val sampled = BitmapFactory.decodeByteArray(input, 0, input.size, decodeOptions)
             ?: throw IllegalArgumentException(
@@ -58,8 +65,8 @@ object ImageUtils {
             )
 
         val largestSampledDimension = maxOf(sampled.width, sampled.height)
-        val bitmap = if (largestSampledDimension > MAX_DIMENSION_PX) {
-            val scale = MAX_DIMENSION_PX.toFloat() / largestSampledDimension
+        val bitmap = if (largestSampledDimension > maxDimensionPx) {
+            val scale = maxDimensionPx.toFloat() / largestSampledDimension
             val targetWidth = (sampled.width * scale).roundToInt().coerceAtLeast(1)
             val targetHeight = (sampled.height * scale).roundToInt().coerceAtLeast(1)
             val scaled = Bitmap.createScaledBitmap(sampled, targetWidth, targetHeight, true)
@@ -87,11 +94,11 @@ object ImageUtils {
         }
     }
 
-    /** Largest power-of-two sample size keeping the decoded image within [MAX_DIMENSION_PX]. */
-    private fun computeInSampleSize(width: Int, height: Int): Int {
+    /** Largest power-of-two sample size keeping the decoded image within [maxDimensionPx]. */
+    private fun computeInSampleSize(width: Int, height: Int, maxDimensionPx: Int): Int {
         var sampleSize = 1
         val largestDimension = maxOf(width, height)
-        while (largestDimension / (sampleSize * 2) >= MAX_DIMENSION_PX) {
+        while (largestDimension / (sampleSize * 2) >= maxDimensionPx) {
             sampleSize *= 2
         }
         return sampleSize

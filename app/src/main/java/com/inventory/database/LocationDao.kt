@@ -38,4 +38,8 @@ interface LocationDao {
 
     @Query("DELETE FROM locations WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    /** Sets (or clears, when [bytes] is null) the location's single cover photo. */
+    @Query("UPDATE locations SET coverImage = :bytes WHERE id = :id")
+    suspend fun setCoverImage(id: Long, bytes: ByteArray?)
 }

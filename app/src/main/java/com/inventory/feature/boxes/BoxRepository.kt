@@ -5,10 +5,13 @@ import com.inventory.database.BoxEntity
 import com.inventory.database.BoxWithPhotoCount
 import com.inventory.database.LocationDao
 import com.inventory.database.LocationEntity
+import com.inventory.image.ImageUtils
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 
 /**
  * Single source of truth for box mutations and observations.
@@ -89,6 +92,23 @@ class BoxRepository @Inject constructor(
      */
     suspend fun moveBox(boxId: Long, newLocationId: Long) {
         boxDao.moveToLocation(boxId, newLocationId)
+    }
+
+    /**
+     * Sets the box's single cover photo from raw [bytes], normalized to a
+     * thumbnail-sized JPEG blob; a null [bytes] clears the cover. Owns its
+     * IO hop because normalization is CPU-bound and must never run on the
+     * caller's thread.
+     */
+    suspend fun setCoverImage(id: Long, bytes: ByteArray?) {
+        if (bytes == null) {
+            withContext(Dispatchers.IO) { boxDao.setCoverImage(id, null) }
+            return
+        }
+        val blob = withContext(Dispatchers.IO) {
+            ImageUtils.normalizeToJpegBlob(bytes, ImageUtils.COVER_MAX_DIMENSION_PX)
+        }
+        withContext(Dispatchers.IO) { boxDao.setCoverImage(id, blob) }
     }
 
     /** Result of a create/rename attempt. */

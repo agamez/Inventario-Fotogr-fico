@@ -96,4 +96,9 @@
     <string name="search_result_location">%1$s · %2$s</string>
     <string name="search_no_box">Not in any box</string>
     <string name="search_showing_first_100">Showing the first 100 results. Refine your search to narrow it down.</string>
+
+    <!-- Cover photos (locations & boxes) -->
+    <string name="set_photo">Set photo</string>
+    <string name="remove_photo">Remove photo</string>
+    <string name="cover_updated">Photo updated</string>
 </resources>

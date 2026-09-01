@@ -3,10 +3,13 @@ package com.inventory.feature.locations
 import com.inventory.database.LocationDao
 import com.inventory.database.LocationEntity
 import com.inventory.database.LocationWithBoxes
+import com.inventory.image.ImageUtils
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 
 /**
  * Single source of truth for location mutations and observations.
@@ -69,6 +72,23 @@ class LocationRepository @Inject constructor(
         if (locationDao.boxCountIn(id) > 0) return DeleteOutcome.HasBoxes
         locationDao.deleteById(id)
         return DeleteOutcome.Success
+    }
+
+    /**
+     * Sets the location's single cover photo from raw [bytes], normalized to
+     * a thumbnail-sized JPEG blob; a null [bytes] clears the cover. Owns its
+     * IO hop because normalization is CPU-bound and must never run on the
+     * caller's thread.
+     */
+    suspend fun setCoverImage(id: Long, bytes: ByteArray?) {
+        if (bytes == null) {
+            withContext(Dispatchers.IO) { locationDao.setCoverImage(id, null) }
+            return
+        }
+        val blob = withContext(Dispatchers.IO) {
+            ImageUtils.normalizeToJpegBlob(bytes, ImageUtils.COVER_MAX_DIMENSION_PX)
+        }
+        withContext(Dispatchers.IO) { locationDao.setCoverImage(id, blob) }
     }
 
     /** Result of a create/rename attempt. */

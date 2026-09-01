@@ -202,8 +202,10 @@ def db_rows():
     con = sqlite3.connect(f"{tmp}/inventory.db")
     rows = {}
     try:
-        rows["locations"] = con.execute("select id,name from locations").fetchall()
-        rows["boxes"] = con.execute("select id,name,locationId from boxes").fetchall()
+        rows["locations"] = con.execute(
+            "select id,name,coverImage is not null as hasCover from locations").fetchall()
+        rows["boxes"] = con.execute(
+            "select id,name,locationId,coverImage is not null as hasCover from boxes").fetchall()
         rows["photos"] = con.execute("select id,boxId,description from photos").fetchall()
     except sqlite3.Error as e:
         rows["error"] = str(e)
@@ -493,6 +495,73 @@ def t_global_search():
     check("no-results state", wait_for(text="No photos match", timeout=6) is not None)
     hide_ime(); back(); time.sleep(0.6)  # leave the search screen
 
+def t_covers():
+    print("\n== Cover photos: location (gallery) + box (camera) ==")
+    # t_global_search is expected to end on the Locations screen; the guard
+    # absorbs any timing drift from the previous scenario.
+    if wait_for(desc="Location options", timeout=6) is None:
+        back(); time.sleep(1.0)
+    check("locations screen at start", wait_for(desc="Location options", timeout=6) is not None)
+
+    # ---- 1. Location cover via gallery pick -------------------------------
+    check("open Garage row menu", row_menu("Garage", "Location options"))
+    time.sleep(1.2)
+    check("location menu has Set photo", wait_for(text="Set photo", timeout=5) is not None)
+    tap_text("Set photo")
+    check("cover sheet opens", wait_for(text="Choose from gallery", timeout=5) is not None)
+    tap_text("Choose from gallery")
+    time.sleep(4.0)
+    dism = find_all(dump(), text="Dismiss")
+    if dism: tap(dism[0]); time.sleep(0.8)
+    photos = find_all(dump(), desc="Photo taken on")
+    check("gallery picker shows photos", bool(photos), str(len(photos)))
+    if photos: tap(photos[0]); time.sleep(1.5)
+    # single pickers sometimes require an explicit "Add" confirmation
+    dlg = False
+    end = time.time() + 12
+    while time.time() < end and not dlg:
+        d = dump()
+        if find_all(d, text="Set photo") and find_all(d, text="Save"): dlg = True; break
+        adds = find_all(d, text="Add")
+        if adds: tap(adds[0])
+        time.sleep(0.8)
+    check("location cover confirm dialog", dlg)
+    tap_text("Save")
+    check("location cover snackbar", snackbar_visible("Photo updated", timeout=8))
+    # cover set -> menu must now also offer Remove photo
+    check("open Garage row menu again", row_menu("Garage", "Location options"))
+    time.sleep(1.2)
+    check("location menu has Remove photo", wait_for(text="Remove photo", timeout=5) is not None)
+    tap_text("Rename")  # harmless item to close the menu cleanly
+    check("rename dialog opened", wait_for(text="Rename location", timeout=5) is not None)
+    tap_text("Cancel"); time.sleep(0.8)
+
+    # ---- 2. Box cover via cover-camera ------------------------------------
+    tap_text("Garage"); time.sleep(1.0)
+    check("boxes screen for Garage", wait_for(text="Winter", timeout=8) is not None)
+    check("open Winter row menu", row_menu("Winter", "Box options"))
+    time.sleep(1.2)
+    check("box menu has Set photo", wait_for(text="Set photo", timeout=5) is not None)
+    tap_text("Set photo")
+    check("cover sheet (box)", wait_for(text="Take photo", timeout=5) is not None)
+    tap_text("Take photo")
+    check("cover camera shutter", tap_desc("Take photo", timeout=10))  # permission granted earlier
+    # the app bar is also titled "Set photo", so detect the dialog via Cancel
+    check("box cover confirm dialog",
+          wait_for(text="Cancel", timeout=10) is not None and bool(find_all(dump(), text="Save")))
+    tap_text("Save")
+    check("box cover snackbar", snackbar_visible("Photo updated", timeout=8))
+    check("back on boxes after save", wait_for(text="Winter", timeout=8) is not None)
+
+    # ---- 3. DB: both covers persisted (run before the final list back-out) --
+    rows = db_rows()
+    garage = [l for l in rows.get("locations", []) if l[1] == "Garage"]
+    winter = [b for b in rows.get("boxes", []) if b[1] == "Winter"]
+    check("db: Garage location hasCover=1", bool(garage) and garage[0][2] == 1, str(garage))
+    check("db: Winter box hasCover=1", bool(winter) and winter[0][3] == 1, str(winter))
+
+    back(); time.sleep(1.0)  # to locations
+
 def main():
     global SERIAL
     out = adb("devices").stdout
@@ -513,6 +582,7 @@ def main():
     t_camera()
     t_selection_delete_and_db()
     t_global_search()
+    t_covers()
     print(f"\n===== {passed} passed, {failed} failed, {len(warnings)} warnings =====")
     if warnings: print("Warnings:", *["  - " + w for w in warnings], sep="\n")
     if failures:

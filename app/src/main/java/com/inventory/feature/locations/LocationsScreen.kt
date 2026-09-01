@@ -1,6 +1,11 @@
 package com.inventory.feature.locations
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,12 +18,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -29,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -36,6 +47,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -45,6 +57,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -52,6 +66,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
 import com.inventory.R
 import com.inventory.database.LocationEntity
 import com.inventory.database.LocationWithBoxes
@@ -60,24 +75,40 @@ import com.inventory.database.LocationWithBoxes
  * Master list of storage locations.
  *
  * Navigation is owned by the caller: tapping a row invokes [onOpenLocation]
- * with the location id, and the app-bar search icon invokes
- * [onOpenSearch]. Rename and Delete are offered per row through an
- * overflow menu (trailing ⋮ or long-press).
+ * with the location id, the app-bar search icon invokes [onOpenSearch], and
+ * the cover "Take photo" option invokes [onOpenCoverCapture] with the
+ * "location" target and the location id. Rename, Set photo, Remove photo
+ * and Delete are offered per row through an overflow menu (trailing ⋮ or
+ * long-press); the cover source is a screen-level [ModalBottomSheet] and
+ * gallery picks pass through a lightweight confirm dialog.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LocationsScreen(
     onOpenLocation: (Long) -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenCoverCapture: (String, Long) -> Unit,
     viewModel: LocationsViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    val pendingCover by viewModel.pendingCover.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
     var showCreateDialog by remember { mutableStateOf(false) }
     var locationToRename by remember { mutableStateOf<LocationEntity?>(null) }
     var locationToDelete by remember { mutableStateOf<LocationEntity?>(null) }
+    var showCoverSheet by remember { mutableStateOf(false) }
+    var coverTargetId by remember { mutableStateOf<Long?>(null) }
+
+    val coverPickLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        val locationId = coverTargetId
+        if (uri != null && locationId != null) {
+            viewModel.onCoverImagePicked(locationId, uri)
+        }
+    }
 
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
@@ -137,6 +168,11 @@ fun LocationsScreen(
                                 entry = entry,
                                 onOpen = { onOpenLocation(entry.location.id) },
                                 onRename = { locationToRename = entry.location },
+                                onSetPhoto = {
+                                    coverTargetId = entry.location.id
+                                    showCoverSheet = true
+                                },
+                                onRemovePhoto = { viewModel.removeCoverImage(entry.location.id) },
                                 onDelete = { locationToDelete = entry.location },
                             )
                         }
@@ -182,6 +218,32 @@ fun LocationsScreen(
             },
         )
     }
+
+    if (showCoverSheet) {
+        CoverSourceSheet(
+            onDismiss = { showCoverSheet = false },
+            onTakePhoto = {
+                showCoverSheet = false
+                coverTargetId?.let { locationId -> onOpenCoverCapture("location", locationId) }
+            },
+            onChooseFromGallery = {
+                showCoverSheet = false
+                coverPickLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+            },
+        )
+    }
+
+    pendingCover?.let { pending ->
+        key(pending) {
+            CoverConfirmDialog(
+                imageBytes = pending.bytes,
+                onSave = viewModel::confirmCoverUpload,
+                onDiscard = viewModel::discardCoverUpload,
+            )
+        }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -190,6 +252,8 @@ private fun LocationRow(
     entry: LocationWithBoxes,
     onOpen: () -> Unit,
     onRename: () -> Unit,
+    onSetPhoto: () -> Unit,
+    onRemovePhoto: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -202,6 +266,9 @@ private fun LocationRow(
                 onClick = onOpen,
                 onLongClick = { menuExpanded = true },
             ),
+        leadingContent = {
+            CoverThumbnail(entry.location.coverImage)
+        },
         headlineContent = {
             Text(
                 text = entry.location.name,
@@ -234,6 +301,22 @@ private fun LocationRow(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text(stringResource(R.string.set_photo)) },
+                        onClick = {
+                            menuExpanded = false
+                            onSetPhoto()
+                        },
+                    )
+                    if (entry.location.coverImage != null) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.remove_photo)) },
+                            onClick = {
+                                menuExpanded = false
+                                onRemovePhoto()
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
                         text = { Text(stringResource(R.string.delete)) },
                         onClick = {
                             menuExpanded = false
@@ -245,6 +328,122 @@ private fun LocationRow(
         },
     )
     HorizontalDivider()
+}
+
+/** Row thumbnail: the saved cover, or a neutral image placeholder. */
+@Composable
+private fun CoverThumbnail(coverImage: ByteArray?) {
+    if (coverImage != null) {
+        AsyncImage(
+            model = coverImage,
+            contentDescription = null,
+            modifier = Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(8.dp)),
+            contentScale = ContentScale.Crop,
+        )
+    } else {
+        Box(
+            modifier = Modifier.size(56.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Image,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.outlineVariant,
+            )
+        }
+    }
+}
+
+/** Sheet offering the two ways to pick a cover photo. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CoverSourceSheet(
+    onDismiss: () -> Unit,
+    onTakePhoto: () -> Unit,
+    onChooseFromGallery: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState()
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            ListItem(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onTakePhoto),
+                headlineContent = {
+                    Text(
+                        text = stringResource(R.string.take_photo),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Filled.PhotoCamera,
+                        contentDescription = null,
+                    )
+                },
+            )
+            HorizontalDivider()
+            ListItem(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onChooseFromGallery),
+                headlineContent = {
+                    Text(
+                        text = stringResource(R.string.choose_from_gallery),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Filled.PhotoLibrary,
+                        contentDescription = null,
+                    )
+                },
+            )
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+/** Lightweight preview confirm for a gallery-picked cover (no metadata). */
+@Composable
+private fun CoverConfirmDialog(
+    imageBytes: ByteArray,
+    onSave: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDiscard,
+        title = { Text(stringResource(R.string.set_photo)) },
+        text = {
+            AsyncImage(
+                model = imageBytes,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+            )
+        },
+        confirmButton = {
+            Button(onClick = onSave) {
+                Text(stringResource(R.string.save))
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDiscard) {
+                Text(stringResource(R.string.cancel))
+            }
+        },
+    )
 }
 
 /** Shared create/rename dialog: blank input disables Save; text state is local. */

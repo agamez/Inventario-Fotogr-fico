@@ -39,4 +39,8 @@ interface BoxDao {
 
     @Query("UPDATE boxes SET locationId = :newLocationId WHERE id = :boxId")
     suspend fun moveToLocation(boxId: Long, newLocationId: Long)
+
+    /** Sets (or clears, when [bytes] is null) the box's single cover photo. */
+    @Query("UPDATE boxes SET coverImage = :bytes WHERE id = :id")
+    suspend fun setCoverImage(id: Long, bytes: ByteArray?)
 }

@@ -11,12 +11,14 @@ import androidx.navigation.navArgument
 import com.inventory.feature.boxes.BoxesScreen
 import com.inventory.feature.locations.LocationsScreen
 import com.inventory.feature.photos.CameraCaptureScreen
+import com.inventory.feature.photos.CoverCaptureScreen
 import com.inventory.feature.photos.PhotosScreen
 import com.inventory.feature.search.SearchScreen
 
 /**
  * Root navigation graph connecting Locations -> Boxes -> Photos -> Camera,
- * plus the global Search screen reached from the Locations app bar.
+ * the cover-camera screen reached from either list, and the global Search
+ * screen reached from the Locations app bar.
  */
 @Composable
 fun InventoryNavGraph(
@@ -35,6 +37,9 @@ fun InventoryNavGraph(
                 },
                 onOpenSearch = {
                     navController.navigate(Screens.Search.route)
+                },
+                onOpenCoverCapture = { target, id ->
+                    navController.navigate(Screens.buildCoverRoute(target, id))
                 },
             )
         }
@@ -59,6 +64,9 @@ fun InventoryNavGraph(
                     navController.navigate(Screens.buildPhotosRoute(boxId))
                 },
                 onBack = { navController.popBackStack() },
+                onOpenCoverCapture = { target, id ->
+                    navController.navigate(Screens.buildCoverRoute(target, id))
+                },
             )
         }
 
@@ -84,6 +92,16 @@ fun InventoryNavGraph(
             ),
         ) {
             CameraCaptureScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(
+            route = Screens.CoverCapture.route,
+            arguments = listOf(
+                navArgument(Screens.ARG_TARGET) { type = NavType.StringType },
+                navArgument(Screens.ARG_COVER_ID) { type = NavType.LongType },
+            ),
+        ) {
+            CoverCaptureScreen(onBack = { navController.popBackStack() })
         }
     }
 }
