@@ -3,7 +3,7 @@ package com.inventory.feature.search
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.database.PhotoSearchResult
-import com.inventory.feature.photos.PhotoRepository
+import com.inventory.feature.containers.ContainerRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.stateIn
 
 /**
  * Presents the global search over every photo in the database, regardless
- * of which box or location it lives in. A blank query browses all items
+ * of which container it lives in. A blank query browses all items
  * (newest first); any non-blank query filters by description or note. The
  * DAO caps results at 100 rows.
  *
@@ -27,7 +27,7 @@ import kotlinx.coroutines.flow.stateIn
  */
 @HiltViewModel
 class SearchViewModel @Inject constructor(
-    private val repository: PhotoRepository,
+    private val repository: ContainerRepository,
 ) : ViewModel() {
 
     data class SearchUiState(

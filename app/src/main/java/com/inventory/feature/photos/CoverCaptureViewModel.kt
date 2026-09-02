@@ -4,8 +4,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.R
-import com.inventory.feature.boxes.BoxRepository
-import com.inventory.feature.locations.LocationRepository
+import com.inventory.feature.containers.ContainerRepository
 import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -20,28 +19,23 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Holds one captured frame destined for the cover of a box or a location.
- * The target kind and id arrive as the navigation arguments `target`
- * ("box" | "location") and `id`.
+ * Holds one captured frame destined for the cover of a container. The
+ * target container id arrives as the navigation argument `nodeId`.
  *
  * The captured bytes live in [pending] (kept out of any equality-heavy UI
  * state); success posts [R.string.cover_updated] on the app-level
- * [UserMessageBus] — the list screen underneath owns the snackbar — and
- * asks the screen to navigate back via [CoverCaptureEvent.NavigateBack].
+ * [UserMessageBus] — the container screen underneath owns the snackbar —
+ * and asks the screen to navigate back via [CoverCaptureEvent.NavigateBack].
  */
 @HiltViewModel
 class CoverCaptureViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val boxRepository: BoxRepository,
-    private val locationRepository: LocationRepository,
+    private val repository: ContainerRepository,
     private val messageBus: UserMessageBus,
 ) : ViewModel() {
 
-    /** Which entity's cover this capture targets; supplied by the nav route. */
-    val target: String = checkNotNull(savedStateHandle["target"])
-
-    /** Id of the targeted box or location; supplied by the nav route. */
-    val targetId: Long = checkNotNull(savedStateHandle["id"])
+    /** Id of the container whose cover this capture sets; supplied by the nav route. */
+    val nodeId: Long = checkNotNull(savedStateHandle["nodeId"])
 
     private val _pending = MutableStateFlow<ByteArray?>(null)
 
@@ -65,7 +59,7 @@ class CoverCaptureViewModel @Inject constructor(
     }
 
     /**
-     * Stores the pending frame as the target's cover. Success clears the
+     * Stores the pending frame as the container's cover. Success clears the
      * pending image, announces [R.string.cover_updated] on the bus and
      * navigates back. An undecodable frame clears the pending image and
      * announces [R.string.error_invalid_image] instead, staying on the
@@ -75,13 +69,7 @@ class CoverCaptureViewModel @Inject constructor(
         val bytes = _pending.value ?: return
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    when (target) {
-                        "box" -> boxRepository.setCoverImage(targetId, bytes)
-                        "location" -> locationRepository.setCoverImage(targetId, bytes)
-                        else -> throw IllegalArgumentException("Unknown cover target '$target'.")
-                    }
-                }
+                withContext(Dispatchers.IO) { repository.setCoverImage(nodeId, bytes) }
                 _pending.value = null
                 messageBus.post(R.string.cover_updated)
                 _events.send(CoverCaptureEvent.NavigateBack)

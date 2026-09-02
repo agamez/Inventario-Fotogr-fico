@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.R
+import com.inventory.feature.containers.ContainerRepository
 import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import javax.inject.Inject
@@ -20,7 +21,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Holds a single captured frame and its mandatory-metadata save flow for one
- * box. The parent box id arrives as the navigation argument `boxId`.
+ * container. The target container id arrives as the navigation argument
+ * `nodeId`.
  *
  * The captured bytes live in [pending] (kept out of any equality-heavy UI
  * state); success navigates back via [CameraEvent.NavigateBack].
@@ -28,12 +30,12 @@ import kotlinx.coroutines.withContext
 @HiltViewModel
 class CameraViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val repository: PhotoRepository,
+    private val repository: ContainerRepository,
     private val messageBus: UserMessageBus,
 ) : ViewModel() {
 
-    /** Id of the box the photo will be stored in; supplied by the nav route. */
-    val boxId: Long = checkNotNull(savedStateHandle["boxId"])
+    /** Id of the container the photo will be stored in; supplied by the nav route. */
+    val nodeId: Long = checkNotNull(savedStateHandle["nodeId"])
 
     private val _pending = MutableStateFlow<ByteArray?>(null)
 
@@ -58,27 +60,27 @@ class CameraViewModel @Inject constructor(
     }
 
     /**
-     * Stores the pending frame in [boxId]; on success the pending image is
+     * Stores the pending frame in [nodeId]; on success the pending image is
      * cleared, [R.string.photo_added] is posted to the app-level
-     * [UserMessageBus] (the photos grid shows the snackbar when it returns)
-     * and the screen is asked to navigate back. An undecodable frame is
-     * dropped so the user can retake it.
+     * [UserMessageBus] (the container screen shows the snackbar when it
+     * returns) and the screen is asked to navigate back. An undecodable
+     * frame is dropped so the user can retake it.
      */
     fun save(rawDescription: String, rawNote: String?) {
         val bytes = _pending.value ?: return
         viewModelScope.launch {
             val outcome = withContext(Dispatchers.IO) {
-                repository.addPhoto(boxId, bytes, rawDescription, rawNote)
+                repository.addPhoto(nodeId, bytes, rawDescription, rawNote)
             }
             when (outcome) {
-                PhotoRepository.AddOutcome.Success -> {
+                ContainerRepository.AddOutcome.Success -> {
                     _pending.value = null
                     messageBus.post(R.string.photo_added)
                     _events.send(CameraEvent.NavigateBack)
                 }
-                PhotoRepository.AddOutcome.BlankDescription ->
+                ContainerRepository.AddOutcome.BlankDescription ->
                     sendEvent(R.string.error_blank_description)
-                PhotoRepository.AddOutcome.InvalidImage -> {
+                ContainerRepository.AddOutcome.InvalidImage -> {
                     _pending.value = null
                     sendEvent(R.string.error_invalid_image)
                 }

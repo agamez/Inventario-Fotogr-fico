@@ -3,9 +3,7 @@ package com.inventory.di
 import android.content.Context
 import androidx.room.Room
 import com.inventory.database.AppDatabase
-import com.inventory.database.BoxDao
-import com.inventory.database.LocationDao
-import com.inventory.database.PhotoDao
+import com.inventory.database.ContainerDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -21,18 +19,10 @@ object AppDatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, "inventory.db")
-            .addMigrations(AppDatabase.MIGRATION_1_2)
+            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3)
             .build()
 
     @Provides
     @Singleton
-    fun provideLocationDao(database: AppDatabase): LocationDao = database.locationDao()
-
-    @Provides
-    @Singleton
-    fun provideBoxDao(database: AppDatabase): BoxDao = database.boxDao()
-
-    @Provides
-    @Singleton
-    fun providePhotoDao(database: AppDatabase): PhotoDao = database.photoDao()
+    fun provideContainerDao(database: AppDatabase): ContainerDao = database.containerDao()
 }

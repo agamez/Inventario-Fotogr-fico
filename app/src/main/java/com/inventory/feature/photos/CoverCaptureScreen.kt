@@ -38,8 +38,8 @@ import com.inventory.R
 import kotlinx.coroutines.launch
 
 /**
- * Camera screen dedicated to setting one box's or location's cover photo
- * (nav arguments `target` and `id`): the reusable [CameraCaptureCore] plus
+ * Camera screen dedicated to setting one container's cover photo (nav
+ * argument `nodeId`): the reusable [CameraCaptureCore] plus
  * a lightweight preview confirm — covers are identity, not items, so there
  * is no metadata to enter. Save stores the cover and asks the screen to
  * navigate back via [CoverCaptureViewModel.CoverCaptureEvent.NavigateBack].

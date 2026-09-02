@@ -2,56 +2,46 @@
 <resources>
     <string name="app_name">Photo Inventory</string>
 
-    <!-- Locations screen -->
-    <string name="title_locations">Locations</string>
-    <string name="add_location">Add location</string>
-    <string name="rename_location">Rename location</string>
-    <string name="location_name_label">Name</string>
-    <string name="location_options">Location options</string>
+    <!-- Container browse screen (root and any node) -->
+    <string name="title_inventory">Inventory</string>
+    <string name="container_fallback_title">Container</string>
+    <string name="add_container">Add container</string>
+    <string name="add">Add</string>
+    <string name="rename_container">Rename</string>
+    <string name="container_name_label">Name</string>
+    <string name="container_options">Options</string>
+    <string name="containers_section">Containers</string>
+    <string name="photos_section">Photos</string>
     <string name="save">Save</string>
     <string name="cancel">Cancel</string>
     <string name="rename">Rename</string>
     <string name="delete">Delete</string>
-    <string name="delete_location_title">Delete location?</string>
-    <string name="delete_location_message">The location \"%1$s\" will be removed. This cannot be undone.</string>
-    <string name="empty_locations">No locations yet.\nTap + to create your first location.</string>
-    <string name="location_created">Location created</string>
-    <string name="location_saved">Location saved</string>
-    <string name="location_deleted">Location deleted</string>
+    <string name="navigate_back">Back</string>
+    <string name="inventory_empty">Your inventory is empty.\nTap + to add your first container.</string>
+    <string name="empty_containers">Nothing here yet.\nTap + to add a container or photograph your items.</string>
+    <string name="container_created">Container created</string>
+    <string name="container_saved">Container saved</string>
+    <string name="container_deleted">Container deleted</string>
+    <string name="container_moved">Container moved</string>
+    <string name="move_container_to">Move to…</string>
+    <string name="no_other_containers">There is nowhere else to move this to. Create another container first.</string>
+    <string name="delete_container_title">Delete container?</string>
+    <string name="delete_container_message">\"%1$s\" and everything inside it (%2$d containers, %3$d photos) will be permanently deleted. This cannot be undone.</string>
     <string name="error_blank_name">Name cannot be blank</string>
     <string name="error_duplicate_name">An item with this name already exists</string>
-    <string name="error_location_has_boxes">This location still has boxes. Move or delete them first.</string>
+    <string name="error_invalid_move_target">You can\'t move a container into itself or its own contents.</string>
 
-    <plurals name="box_count">
-        <item quantity="one">1 box</item>
-        <item quantity="other">%1$d boxes</item>
+    <plurals name="container_count">
+        <item quantity="one">1 container</item>
+        <item quantity="other">%1$d containers</item>
     </plurals>
-
-    <!-- Boxes screen -->
-    <string name="empty_boxes">No boxes yet.\nTap + to create your first box.</string>
-    <string name="add_box">Add box</string>
-    <string name="rename_box">Rename box</string>
-    <string name="box_name_label">Name</string>
-    <string name="box_options">Box options</string>
-    <string name="move_box_to_location">Move to location</string>
-    <string name="no_other_locations">There are no other locations to move this box to. Create another location first.</string>
-    <string name="box_created">Box created</string>
-    <string name="box_saved">Box saved</string>
-    <string name="box_deleted">Box deleted</string>
-    <string name="box_moved">Box moved</string>
-    <string name="delete_box_title">Delete box?</string>
-    <string name="delete_box_message">The box \"%1$s\" will be permanently deleted along with the photos it contains (%2$d). This cannot be undone.</string>
-    <string name="navigate_back">Back</string>
-    <string name="location_fallback_title">Boxes</string>
 
     <plurals name="photo_count">
         <item quantity="one">1 photo</item>
         <item quantity="other">%1$d photos</item>
     </plurals>
 
-    <!-- Photos screen -->
-    <string name="box_fallback_title">Photos</string>
-    <string name="add_photos">Add photos</string>
+    <!-- Photos (grid, save queue, preview, inside a container) -->
     <string name="take_photo">Take photo</string>
     <string name="choose_from_gallery">Choose from gallery</string>
     <string name="photo_description_required_label">Description (required)</string>
@@ -60,13 +50,10 @@
     <string name="search_photos">Search photos</string>
     <string name="search_toggle">Toggle search</string>
     <string name="clear_search">Clear search</string>
-    <string name="no_photos">No photos yet.\nTap + to add the first one.</string>
     <string name="no_search_results">No photos match your search.</string>
     <string name="selection_exit">Exit selection</string>
     <string name="selection_move">Move selected photos</string>
     <string name="selection_delete">Delete selected photos</string>
-    <string name="move_photos_to_box">Move to box</string>
-    <string name="no_other_boxes">There are no other boxes to move photos to. Create another box first.</string>
     <string name="delete_photos_confirm">%1$d photo(s) will be permanently deleted. This cannot be undone.</string>
     <string name="delete_photo_title">Delete photo?</string>
     <string name="delete_photo_message">The photo \"%1$s\" will be permanently deleted. This cannot be undone.</string>
@@ -93,11 +80,10 @@
     <string name="open_search">Search all items</string>
     <string name="search_hint">Search all photos</string>
     <string name="search_all_caption">All items, newest first. Type to search.</string>
-    <string name="search_result_location">%1$s · %2$s</string>
-    <string name="search_no_box">Not in any box</string>
+    <string name="search_no_box">Not in any container</string>
     <string name="search_showing_first_100">Showing the first 100 results. Refine your search to narrow it down.</string>
 
-    <!-- Cover photos (locations & boxes) -->
+    <!-- Cover photos (containers) -->
     <string name="set_photo">Set photo</string>
     <string name="remove_photo">Remove photo</string>
     <string name="cover_updated">Photo updated</string>

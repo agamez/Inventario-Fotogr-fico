@@ -9,17 +9,17 @@ import androidx.room.PrimaryKey
     tableName = "photos",
     foreignKeys = [
         ForeignKey(
-            entity = BoxEntity::class,
+            entity = ContainerEntity::class,
             parentColumns = ["id"],
-            childColumns = ["boxId"],
+            childColumns = ["nodeId"],
             onDelete = ForeignKey.CASCADE,
         ),
     ],
-    indices = [Index("boxId")],
+    indices = [Index("nodeId")],
 )
 data class PhotoEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val boxId: Long?,
+    val nodeId: Long?,
     val image: ByteArray,
     val description: String,
     val note: String?,
@@ -33,7 +33,7 @@ data class PhotoEntity(
         other as PhotoEntity
 
         if (id != other.id) return false
-        if (boxId != other.boxId) return false
+        if (nodeId != other.nodeId) return false
         if (!image.contentEquals(other.image)) return false
         if (description != other.description) return false
         if (note != other.note) return false
@@ -44,7 +44,7 @@ data class PhotoEntity(
 
     override fun hashCode(): Int {
         var result = id.hashCode()
-        result = 31 * result + (boxId?.hashCode() ?: 0)
+        result = 31 * result + (nodeId?.hashCode() ?: 0)
         result = 31 * result + image.contentHashCode()
         result = 31 * result + description.hashCode()
         result = 31 * result + (note?.hashCode() ?: 0)

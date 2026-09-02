@@ -52,11 +52,11 @@ private const val SEARCH_RESULT_LIMIT = 100
 
 /**
  * Global search over every item in the database: type to filter by
- * description or note across all boxes and locations, or leave the field
- * blank to browse everything (newest first). Each row shows a thumbnail
- * and where the item lives and, when it lives in a box, tapping jumps to
- * that box's grid via [onOpenPhoto]; detached items stay inert.
- * [onBack] pops this screen.
+ * description or note across all containers, or leave the field blank to
+ * browse everything (newest first). Each row shows a thumbnail and the
+ * full container path where the item lives and, when it lives in a
+ * container, tapping jumps to that container's browse screen via
+ * [onOpenPhoto]; detached items stay inert. [onBack] pops this screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -153,8 +153,8 @@ fun SearchScreen(
                                 SearchResultRow(
                                     result = result,
                                     viewModel = viewModel,
-                                    onClick = result.boxId?.let { boxId ->
-                                        { onOpenPhoto(boxId) }
+                                    onClick = result.nodeId?.let { nodeId ->
+                                        { onOpenPhoto(nodeId) }
                                     },
                                 )
                             }
@@ -177,8 +177,8 @@ fun SearchScreen(
 
 /**
  * One search hit: a real thumbnail of the item (loaded lazily per visible
- * row, so blob reads stay bounded), its description, its box · location,
- * and a jump.
+ * row, so blob reads stay bounded), its description, its full container
+ * path, and a jump.
  */
 @Composable
 private fun SearchResultRow(
@@ -201,17 +201,8 @@ private fun SearchResultRow(
             )
         },
         supportingContent = {
-            val boxName = result.boxName
             Text(
-                text = if (boxName == null) {
-                    stringResource(R.string.search_no_box)
-                } else {
-                    stringResource(
-                        R.string.search_result_location,
-                        boxName,
-                        result.locationName.orEmpty(),
-                    )
-                },
+                text = result.containerPath ?: stringResource(R.string.search_no_box),
                 style = MaterialTheme.typography.bodyMedium,
             )
         },

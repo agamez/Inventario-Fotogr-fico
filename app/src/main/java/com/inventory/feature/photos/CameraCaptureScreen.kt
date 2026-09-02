@@ -43,7 +43,7 @@ import com.inventory.R
 import kotlinx.coroutines.launch
 
 /**
- * CameraX capture screen for one box (nav argument `boxId`): the reusable
+ * CameraX capture screen for one container (nav argument `nodeId`): the reusable
  * [CameraCaptureCore] provides the permission gate, preview and shutter,
  * and every successful capture opens the mandatory metadata sheet shown
  * here. Saving inserts the photo and navigates back via
