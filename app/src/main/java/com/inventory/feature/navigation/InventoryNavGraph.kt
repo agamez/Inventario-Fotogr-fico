@@ -14,11 +14,11 @@ import com.inventory.feature.photos.CoverCaptureScreen
 import com.inventory.feature.search.SearchScreen
 
 /**
- * Root navigation graph of the hierarchical inventory: the browse screen
- * is reused for the root ("inventory", nodeId 0) and for every container
- * ("container/{nodeId}", any depth), with the camera and cover-capture
- * screens saving into the addressed node and the global Search reached
- * from the app bar.
+ * Root navigation graph of the filesystem inventory: the browse screen is
+ * reused for the storage root ("inventory") and for any container folder
+ * ("container/{path}", URL-encoded absolute path, any depth), with the
+ * camera and cover-capture screens saving into the addressed folder and
+ * the global Search reached from the app bar.
  */
 @Composable
 fun InventoryNavGraph(
@@ -32,15 +32,14 @@ fun InventoryNavGraph(
     ) {
         composable(route = Screens.Inventory.route) {
             ContainerScreen(
-                nodeId = 0L,
-                onOpenContainer = { containerId ->
-                    navController.navigate(Screens.buildContainerRoute(containerId))
+                onOpenContainer = { path ->
+                    navController.navigate(Screens.buildContainerRoute(path))
                 },
-                onOpenCamera = { nodeId ->
-                    navController.navigate(Screens.buildCameraRoute(nodeId))
+                onOpenCamera = { path ->
+                    navController.navigate(Screens.buildCameraRoute(path))
                 },
-                onOpenCoverCapture = { nodeId ->
-                    navController.navigate(Screens.buildCoverRoute(nodeId))
+                onOpenCoverCapture = { path ->
+                    navController.navigate(Screens.buildCoverRoute(path))
                 },
                 onOpenSearch = {
                     navController.navigate(Screens.Search.route)
@@ -52,8 +51,8 @@ fun InventoryNavGraph(
         composable(route = Screens.Search.route) {
             SearchScreen(
                 onBack = { navController.popBackStack() },
-                onOpenPhoto = { nodeId ->
-                    navController.navigate(Screens.buildContainerRoute(nodeId))
+                onOpenPhoto = { containerPath ->
+                    navController.navigate(Screens.buildContainerRoute(containerPath))
                 },
             )
         }
@@ -61,18 +60,16 @@ fun InventoryNavGraph(
         composable(
             route = Screens.Container.route,
             arguments = listOf(
-                navArgument(Screens.ARG_NODE_ID) { type = NavType.LongType },
+                navArgument(Screens.ARG_PATH) { type = NavType.StringType },
             ),
-        ) { backStackEntry ->
-            val nodeId = backStackEntry.arguments?.getLong(Screens.ARG_NODE_ID) ?: 0L
+        ) {
             ContainerScreen(
-                nodeId = nodeId,
-                onOpenContainer = { containerId ->
-                    navController.navigate(Screens.buildContainerRoute(containerId))
+                onOpenContainer = { path ->
+                    navController.navigate(Screens.buildContainerRoute(path))
                 },
-                onOpenCamera = { navController.navigate(Screens.buildCameraRoute(nodeId)) },
-                onOpenCoverCapture = { containerId ->
-                    navController.navigate(Screens.buildCoverRoute(containerId))
+                onOpenCamera = { navController.navigate(Screens.buildCameraRoute(it)) },
+                onOpenCoverCapture = { path ->
+                    navController.navigate(Screens.buildCoverRoute(path))
                 },
                 onOpenSearch = {
                     navController.navigate(Screens.Search.route)
@@ -84,7 +81,7 @@ fun InventoryNavGraph(
         composable(
             route = Screens.Camera.route,
             arguments = listOf(
-                navArgument(Screens.ARG_NODE_ID) { type = NavType.LongType },
+                navArgument(Screens.ARG_PATH) { type = NavType.StringType },
             ),
         ) {
             CameraCaptureScreen(onBack = { navController.popBackStack() })
@@ -93,7 +90,7 @@ fun InventoryNavGraph(
         composable(
             route = Screens.CoverCapture.route,
             arguments = listOf(
-                navArgument(Screens.ARG_NODE_ID) { type = NavType.LongType },
+                navArgument(Screens.ARG_PATH) { type = NavType.StringType },
             ),
         ) {
             CoverCaptureScreen(onBack = { navController.popBackStack() })

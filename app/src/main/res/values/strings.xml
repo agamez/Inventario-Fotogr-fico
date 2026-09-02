@@ -87,4 +87,18 @@
     <string name="set_photo">Set photo</string>
     <string name="remove_photo">Remove photo</string>
     <string name="cover_updated">Photo updated</string>
+
+    <!-- Filesystem storage: permission gate, rescan, conflicts, search scope -->
+    <string name="storage_permission_rationale">Photo Inventory reads and writes a normal folder of photos (PhotoInventory) in shared storage, so your images stay real files you can open, sync or fix with any file manager. Grant access to use the app.</string>
+    <string name="grant_storage_access">Grant access</string>
+    <string name="rescan_storage">Rescan storage</string>
+    <string name="rescanned">Storage rescanned</string>
+    <string name="search_scope_here">This container</string>
+    <string name="search_scope_subtree">Include sub-containers</string>
+    <string name="conflict_badge">Sync conflict</string>
+
+    <plurals name="conflict_banner">
+        <item quantity="one">%1$d sync-conflicted file — resolve it with a file manager, then rescan.</item>
+        <item quantity="other">%1$d sync-conflicted files — resolve them with a file manager, then rescan.</item>
+    </plurals>
 </resources>

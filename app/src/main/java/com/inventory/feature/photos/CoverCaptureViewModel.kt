@@ -4,11 +4,12 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.R
-import com.inventory.feature.containers.ContainerRepository
+import com.inventory.storage.InventoryStore
 import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.io.File
+import java.io.IOException
 import javax.inject.Inject
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,31 +17,33 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
- * Holds one captured frame destined for the cover of a container. The
- * target container id arrives as the navigation argument `nodeId`.
+ * Holds one captured frame destined for the cover of a container folder.
+ * The target folder's absolute path arrives as the (URL-decoded)
+ * navigation argument `path` — contractual with
+ * [com.inventory.feature.navigation.Screens.ARG_PATH].
  *
- * The captured bytes live in [pending] (kept out of any equality-heavy UI
- * state); success posts [R.string.cover_updated] on the app-level
- * [UserMessageBus] — the container screen underneath owns the snackbar —
- * and asks the screen to navigate back via [CoverCaptureEvent.NavigateBack].
+ * The frame is staged verbatim under `cacheDir/pending` and lives in
+ * [pending]; success promotes it to the folder's `_cover.jpg`, posts
+ * [R.string.cover_updated] on the app-level [UserMessageBus] (the
+ * container screen underneath rescans and owns the snackbar) and asks the
+ * screen to navigate back via [CoverCaptureEvent.NavigateBack].
  */
 @HiltViewModel
 class CoverCaptureViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val repository: ContainerRepository,
+    private val store: InventoryStore,
     private val messageBus: UserMessageBus,
 ) : ViewModel() {
 
-    /** Id of the container whose cover this capture sets; supplied by the nav route. */
-    val nodeId: Long = checkNotNull(savedStateHandle["nodeId"])
+    /** Path of the folder whose cover this capture sets; supplied by the nav route. */
+    val folderPath: String = checkNotNull(savedStateHandle["path"])
 
-    private val _pending = MutableStateFlow<ByteArray?>(null)
+    private val _pending = MutableStateFlow<File?>(null)
 
-    /** The just-captured image awaiting confirmation, or null. */
-    val pending: StateFlow<ByteArray?> = _pending.asStateFlow()
+    /** The staged capture awaiting confirmation, or null. */
+    val pending: StateFlow<File?> = _pending.asStateFlow()
 
     /** One-shot UI events, consumed exactly once by the screen. */
     sealed interface CoverCaptureEvent {
@@ -50,30 +53,42 @@ class CoverCaptureViewModel @Inject constructor(
     private val _events = Channel<CoverCaptureEvent>(Channel.BUFFERED)
     val events: Flow<CoverCaptureEvent> = _events.receiveAsFlow()
 
+    /** Stages the fresh capture bytes verbatim, replacing any earlier pending frame. */
     fun onCaptured(bytes: ByteArray) {
-        _pending.value = bytes
+        viewModelScope.launch {
+            _pending.value?.let { store.unstage(it) }
+            _pending.value = store.stageBytes(bytes)
+        }
     }
 
+    /** Throws away the pending staged frame. */
     fun discardPending() {
+        val file = _pending.value ?: return
         _pending.value = null
+        viewModelScope.launch { store.unstage(file) }
     }
 
     /**
-     * Stores the pending frame as the container's cover. Success clears the
-     * pending image, announces [R.string.cover_updated] on the bus and
-     * navigates back. An undecodable frame clears the pending image and
-     * announces [R.string.error_invalid_image] instead, staying on the
-     * screen so the user can retry.
+     * Stores the pending frame as the folder's cover. Success clears the
+     * pending state (the staged file was consumed), announces
+     * [R.string.cover_updated] on the bus and navigates back. A rejected
+     * frame announces [R.string.error_invalid_image] instead, staying on
+     * the screen so the user can retry.
      */
     fun save() {
-        val bytes = _pending.value ?: return
+        val staged = _pending.value ?: return
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) { repository.setCoverImage(nodeId, bytes) }
+                store.setCover(File(folderPath), staged)
                 _pending.value = null
                 messageBus.post(R.string.cover_updated)
                 _events.send(CoverCaptureEvent.NavigateBack)
             } catch (exception: IllegalArgumentException) {
+                store.unstage(staged)
+                _pending.value = null
+                messageBus.post(R.string.error_invalid_image)
+            } catch (exception: IOException) {
+                store.unstage(staged)
                 _pending.value = null
                 messageBus.post(R.string.error_invalid_image)
             }

@@ -14,7 +14,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -29,9 +28,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,24 +42,25 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.inventory.R
-import com.inventory.database.PhotoSearchResult
+import java.io.File
 
 /** Row count at which the DAO's `LIMIT 100` starts truncating results. */
 private const val SEARCH_RESULT_LIMIT = 100
 
 /**
- * Global search over every item in the database: type to filter by
- * description or note across all containers, or leave the field blank to
- * browse everything (newest first). Each row shows a thumbnail and the
- * full container path where the item lives and, when it lives in a
- * container, tapping jumps to that container's browse screen via
- * [onOpenPhoto]; detached items stay inert. [onBack] pops this screen.
+ * Global search over the storage index: type to filter by EXIF
+ * description or note across all folders, or leave the field blank to
+ * browse everything (newest first). Each row shows a thumbnail loaded
+ * straight from the photo file and the container folder path (relative
+ * to the inventory root) where the item lives; tapping jumps to that
+ * folder's browse screen via [onOpenPhoto] (absolute path). [onBack] pops
+ * this screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
     onBack: () -> Unit,
-    onOpenPhoto: (Long) -> Unit,
+    onOpenPhoto: (String) -> Unit,
     viewModel: SearchViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -148,14 +146,11 @@ fun SearchScreen(
                             }
                             items(
                                 items = uiState.results,
-                                key = { result -> result.photoId },
-                            ) { result ->
+                                key = { hit -> hit.entry.path },
+                            ) { hit ->
                                 SearchResultRow(
-                                    result = result,
-                                    viewModel = viewModel,
-                                    onClick = result.nodeId?.let { nodeId ->
-                                        { onOpenPhoto(nodeId) }
-                                    },
+                                    hit = hit,
+                                    onClick = { onOpenPhoto(viewModel.containerOf(hit)) },
                                 )
                             }
                             if (uiState.results.size >= SEARCH_RESULT_LIMIT) {
@@ -176,53 +171,41 @@ fun SearchScreen(
 }
 
 /**
- * One search hit: a real thumbnail of the item (loaded lazily per visible
- * row, so blob reads stay bounded), its description, its full container
- * path, and a jump.
+ * One search hit: a real thumbnail of the item (the JPEG on disk, which
+ * Coil samples lazily by itself), its description, its container folder
+ * path relative to the inventory root, and a jump to that folder.
  */
 @Composable
 private fun SearchResultRow(
-    result: PhotoSearchResult,
-    viewModel: SearchViewModel,
-    onClick: (() -> Unit)?,
+    hit: SearchViewModel.SearchHit,
+    onClick: () -> Unit,
 ) {
-    var cover by remember(result.photoId) { mutableStateOf<ByteArray?>(null) }
-    LaunchedEffect(result.photoId) { cover = viewModel.imageFor(result.photoId) }
+    val entry = hit.entry
     ListItem(
         modifier = Modifier
             .fillMaxWidth()
-            .then(
-                if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier,
-            ),
+            .clickable(onClick = onClick),
         headlineContent = {
             Text(
-                text = result.description,
+                text = entry.description ?: entry.name,
                 style = MaterialTheme.typography.titleMedium,
             )
         },
         supportingContent = {
             Text(
-                text = result.containerPath ?: stringResource(R.string.search_no_box),
+                text = hit.location,
                 style = MaterialTheme.typography.bodyMedium,
             )
         },
         leadingContent = {
-            val bytes = cover
-            if (bytes != null) {
-                AsyncImage(
-                    model = bytes,
-                    contentDescription = null,
-                    modifier = Modifier
-                        .size(48.dp)
-                        .clip(RoundedCornerShape(8.dp)),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
-                Icon(
-                    imageVector = Icons.Outlined.Image,
-                    contentDescription = null,
-                )
-            }
+            AsyncImage(
+                model = File(entry.path),
+                contentDescription = null,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.Crop,
+            )
         },
     )
     HorizontalDivider()

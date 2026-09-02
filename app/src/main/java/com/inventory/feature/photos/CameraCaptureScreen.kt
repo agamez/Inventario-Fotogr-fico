@@ -40,13 +40,15 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.inventory.R
+import java.io.File
 import kotlinx.coroutines.launch
 
 /**
- * CameraX capture screen for one container (nav argument `nodeId`): the reusable
- * [CameraCaptureCore] provides the permission gate, preview and shutter,
- * and every successful capture opens the mandatory metadata sheet shown
- * here. Saving inserts the photo and navigates back via
+ * CameraX capture screen for one container folder (nav argument `path`):
+ * the reusable [CameraCaptureCore] provides the permission gate, preview
+ * and shutter, and every successful capture is staged as a pending file
+ * and opens the mandatory metadata sheet shown here. Saving copies the
+ * staged bytes into the folder byte-identically and navigates back via
  * [CameraViewModel.CameraEvent.NavigateBack].
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -104,10 +106,10 @@ fun CameraCaptureScreen(
         }
     }
 
-    pending?.let { bytes ->
-        key(bytes) {
+    pending?.let { staged ->
+        key(staged) {
             CaptureSaveDialog(
-                imageBytes = bytes,
+                imageFile = staged,
                 onSave = { description, note -> viewModel.save(description, note) },
                 onDiscard = viewModel::discardPending,
             )
@@ -116,13 +118,14 @@ fun CameraCaptureScreen(
 }
 
 /**
- * Mandatory-metadata dialog for the just-captured frame: preview, required
- * description, optional note. Save stores the photo (the ViewModel then
- * asks the screen to navigate back); Cancel/discard returns to the preview.
+ * Mandatory-metadata dialog for the just-captured (staged) frame:
+ * preview, required description, optional note. Save stores the photo
+ * (the ViewModel then asks the screen to navigate back);
+ * Cancel/discard returns to the preview.
  */
 @Composable
 private fun CaptureSaveDialog(
-    imageBytes: ByteArray,
+    imageFile: File,
     onSave: (String, String?) -> Unit,
     onDiscard: () -> Unit,
 ) {
@@ -135,7 +138,7 @@ private fun CaptureSaveDialog(
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 AsyncImage(
-                    model = imageBytes,
+                    model = imageFile,
                     contentDescription = null,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier

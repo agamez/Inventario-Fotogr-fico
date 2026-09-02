@@ -1,19 +1,20 @@
 package com.inventory.feature.containers
 
-import android.content.Context
 import android.net.Uri
 import androidx.annotation.StringRes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.R
-import com.inventory.database.ContainerEntity
-import com.inventory.database.ContainerPath
-import com.inventory.database.ContainerWithCounts
-import com.inventory.database.PhotoEntity
+import com.inventory.cache.CacheDao
+import com.inventory.cache.CacheEntry
+import com.inventory.cache.ChildCounts
+import com.inventory.cache.InventoryScanner
+import com.inventory.storage.InventoryStore
 import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
+import java.io.IOException
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -25,129 +26,207 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
- * Presents one node of the container tree — the virtual root ("Inventory",
- * nodeId 0) or any container — and exposes the full CRUD surface of the old
- * Locations, Boxes and Photos ViewModels merged: child containers
- * create/rename/delete/move with cycle-safe pickers, per-container cover
- * photos, and inside a container the photo search, multi-select
- * move/delete, the mandatory-metadata save queue and single-photo edits.
+ * Presents one folder of the filesystem inventory — the storage root
+ * ("Inventory", no navigation argument) or any container — and owns the
+ * full CRUD surface: folders create/rename/move/delete, `_cover.jpg`
+ * covers, and the photo queue (staged files → EXIF-stamped JPEGs), search
+ * (here / whole subtree) and multi-select move/delete.
  *
- * The node id arrives as the navigation argument `nodeId`; the home
- * destination has no arguments and defaults to the root.
+ * Every action mutates DISK first through [InventoryStore], then asks
+ * [InventoryScanner] to converge the cache; the live DAO flows do the
+ * rest. The folder shown arrives as the (URL-decoded) navigation argument
+ * `path`; the root destination has none.
  *
- * Data lives in [uiState]; captured/picked bytes waiting for confirmation
- * live in [pendingQueue] and [pendingCover] (kept out of [uiState] so large
- * arrays never participate in state equality); one-shot feedback lives in
- * [events] so it survives configuration changes without being re-shown.
+ * Captured/picked files waiting for confirmation live in [pendingQueue]
+ * and [pendingCover] (kept out of [uiState] so `File`s never participate
+ * in state equality); one-shot feedback lives in [events], and
+ * mutations announced by other screens (camera, cover capture) arrive on
+ * the app-level [UserMessageBus] and also trigger a rescan here.
  */
 @HiltViewModel
 class ContainerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val repository: ContainerRepository,
+    private val store: InventoryStore,
+    private val dao: CacheDao,
+    private val scanner: InventoryScanner,
     private val messageBus: UserMessageBus,
-    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
-    /** Node being shown; 0 = the virtual root (home). */
-    val nodeId: Long = savedStateHandle["nodeId"] ?: 0L
+    /**
+     * Absolute path of the folder on screen; the storage root when no
+     * argument. The key is contractual with
+     * [com.inventory.feature.navigation.Screens.ARG_PATH].
+     */
+    val folderPath: String = savedStateHandle["path"] ?: store.rootPath
+
+    /** The folder on screen as a [File] (may not exist — e.g. just deleted). */
+    val folder: File = File(folderPath)
+
+    /** True when the screen shows the storage root itself. */
+    val isRoot: Boolean = folderPath == store.rootPath
 
     /** Sizes of a subtree, gathered before the delete confirmation opens. */
     data class DeleteCandidate(
-        val id: Long,
+        val path: String,
         val name: String,
         val childContainers: Int,
         val childPhotos: Int,
     )
 
     data class ContainerUiState(
-        val container: ContainerEntity? = null,
-        val path: List<String> = emptyList(),
-        val children: List<ContainerWithCounts> = emptyList(),
-        val photos: List<PhotoEntity> = emptyList(),
+        val isRoot: Boolean = false,
+        val containerName: String = "",
+        val children: List<CacheEntry> = emptyList(),
+        val childCounts: Map<String, ChildCounts> = emptyMap(),
+        val photos: List<CacheEntry> = emptyList(),
         val searchQuery: String = "",
+        val searchScopeHere: Boolean = true,
         val selectionMode: Boolean = false,
-        val selectedPhotoIds: Set<Long> = emptySet(),
+        val selectedPaths: Set<String> = emptySet(),
         val deleteCandidate: DeleteCandidate? = null,
+        val hasCover: Boolean = false,
+        val folderMissing: Boolean = false,
+        val scanning: Boolean = false,
+        val conflictCount: Int = 0,
         val isLoading: Boolean = true,
     )
 
-    /** A cover image read from the gallery, waiting for the container it belongs to. */
-    data class PendingCoverUpload(val containerId: Long, val bytes: ByteArray)
+    /** A gallery-picked cover waiting in the confirm dialog for its folder. */
+    data class PendingCoverUpload(val folderPath: String, val file: File)
+
+    /** One entry of the folder pickers: absolute path + "Building / Shelf" label. */
+    data class FolderChoice(val path: String, val label: String)
+
+    private val parentArg: String? = if (isRoot) null else folderPath
 
     private val _searchQuery = MutableStateFlow("")
-    private val _selectedPhotoIds = MutableStateFlow<Set<Long>>(emptySet())
+    private val _searchScopeHere = MutableStateFlow(true)
+    private val _selectedPaths = MutableStateFlow<Set<String>>(emptySet())
     private val _deleteCandidate = MutableStateFlow<DeleteCandidate?>(null)
+    private val _moveExcludedPaths = MutableStateFlow<Set<String>>(emptySet())
 
-    /** The root has no row and no ancestors: constant, empty flows. */
-    private val containerFlow: Flow<ContainerEntity?> =
-        if (nodeId == 0L) flowOf(null) else repository.observeContainer(nodeId)
+    private val childrenFlow: Flow<List<CacheEntry>> = dao.observeChildren(parentArg)
 
-    private val pathFlow: Flow<List<String>> =
-        if (nodeId == 0L) flowOf(emptyList()) else repository.observePath(nodeId)
+    private val countsFlow: Flow<Map<String, ChildCounts>> =
+        dao.observeAllChildCounts().map { rows -> rows.associateBy(ChildCounts::path) }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val photosFlow: Flow<List<CacheEntry>> = combine(
+        _searchQuery,
+        _searchScopeHere,
+    ) { query, here -> query.trim() to here }
+        .flatMapLatest { (query, here) ->
+            if (here) {
+                dao.observePhotosIn(parentArg, query)
+            } else {
+                dao.observePhotosUnder(folderPath, query)
+            }
+        }
 
     /** Transient combine slice: photo list plus the UI flows driving it. */
     private data class PhotoSlice(
-        val photos: List<PhotoEntity>,
+        val photos: List<CacheEntry>,
         val query: String,
-        val selected: Set<Long>,
+        val scopeHere: Boolean,
+        val selected: Set<String>,
         val deleteCandidate: DeleteCandidate?,
     )
 
-    @OptIn(ExperimentalCoroutinesApi::class)
     private val photoSlice: Flow<PhotoSlice> = combine(
-        _searchQuery.flatMapLatest { query ->
-            repository.observePhotosForContainer(nodeId, query)
-        },
+        photosFlow,
         _searchQuery,
-        _selectedPhotoIds,
+        _searchScopeHere,
+        _selectedPaths,
         _deleteCandidate,
-    ) { photos, query, selected, deleteCandidate ->
-        PhotoSlice(photos, query, selected, deleteCandidate)
+    ) { photos, query, scope, selected, deleteCandidate ->
+        PhotoSlice(photos, query, scope, selected, deleteCandidate)
     }
 
+    /** Cover presence + folder survival, re-checked on every cache refresh. */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val folderFactsFlow: Flow<FolderFacts> = childrenFlow
+        .flatMapLatest {
+            flow {
+                emit(
+                    FolderFacts(
+                        hasCover = store.coverFile(folder) != null,
+                        exists = folder.isDirectory,
+                    ),
+                )
+            }
+        }
+        .flowOn(Dispatchers.IO)
+
+    private data class FolderFacts(val hasCover: Boolean, val exists: Boolean)
+
+    private val scanSlice = combine(
+        scanner.scanState.map { it.scanning },
+        dao.countConflicts(),
+    ) { scanning, conflicts -> scanning to conflicts }
+
     val uiState: StateFlow<ContainerUiState> = combine(
-        containerFlow,
-        pathFlow,
-        repository.observeChildren(if (nodeId == 0L) null else nodeId),
+        childrenFlow,
+        countsFlow,
         photoSlice,
-    ) { container, path, children, slice ->
+        folderFactsFlow,
+        scanSlice,
+    ) { children, counts, slice, facts, (scanning, conflicts) ->
         ContainerUiState(
-            container = container,
-            path = path,
+            isRoot = isRoot,
+            containerName = if (isRoot) "" else folder.name,
             children = children,
+            childCounts = counts,
             photos = slice.photos,
             searchQuery = slice.query,
+            searchScopeHere = slice.scopeHere,
             selectionMode = slice.selected.isNotEmpty(),
-            selectedPhotoIds = slice.selected,
+            selectedPaths = slice.selected,
             deleteCandidate = slice.deleteCandidate,
+            hasCover = facts.hasCover,
+            folderMissing = !isRoot && !facts.exists,
+            scanning = scanning,
+            conflictCount = conflicts,
             isLoading = false,
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5_000),
-        initialValue = ContainerUiState(),
+        initialValue = ContainerUiState(isRoot = isRoot),
     )
 
     /**
-     * Containers a move may target: every path except the subtree of the
-     * container being moved; [requestMove] refreshes the excluded set when
-     * a move sheet opens (for the screen's own container or a child row).
+     * Folders a container move may target: every indexed folder except the
+     * subtree of the folder being moved ([requestMove] refreshes the
+     * excluded set when a move sheet opens), so a cycle can never even be
+     * tapped.
      */
-    private val _moveExcludedIds = MutableStateFlow<Set<Long>>(emptySet())
+    val movableTargets: StateFlow<List<FolderChoice>> = combine(
+        dao.observeAllFolders(),
+        _moveExcludedPaths,
+    ) { folders, excluded ->
+        folders.filterNot { it.path in excluded }.map { it.toFolderChoice() }
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5_000),
+        initialValue = emptyList(),
+    )
 
-    val movableTargets: StateFlow<List<ContainerPath>> = combine(
-        repository.observeAllPaths(),
-        _moveExcludedIds,
-    ) { paths, excluded -> paths.filterNot { it.id in excluded } }
+    /**
+     * Destinations for the photo-move picker: every folder except the one
+     * currently open. Photos may move into descendants — the cycle rule
+     * only applies to containers.
+     */
+    val photoMoveTargets: StateFlow<List<FolderChoice>> = dao.observeAllFolders()
+        .map { folders -> folders.filterNot { it.path == folderPath }.map { it.toFolderChoice() } }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
@@ -155,25 +234,12 @@ class ContainerViewModel @Inject constructor(
         )
 
     /**
-     * Destinations for the photo-move picker: every path except the
-     * container currently open. Photos may move into descendants — the
-     * cycle rule only applies to containers.
+     * Staged images captured or picked but still lacking their mandatory
+     * description; the save sheet edits [List.first] and pops it on
+     * success. Cancelling the sheet deletes every staged file.
      */
-    val photoMoveTargets: StateFlow<List<ContainerPath>> = repository.observeAllPaths()
-        .map { paths -> paths.filterNot { it.id == nodeId } }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = emptyList(),
-        )
-
-    /**
-     * Images captured or picked but still lacking their mandatory
-     * description; the save sheet edits [List.first] and pops it on success.
-     * Cancelling the sheet discards the whole queue.
-     */
-    private val _pendingQueue = MutableStateFlow<List<ByteArray>>(emptyList())
-    val pendingQueue: StateFlow<List<ByteArray>> = _pendingQueue
+    private val _pendingQueue = MutableStateFlow<List<File>>(emptyList())
+    val pendingQueue: StateFlow<List<File>> = _pendingQueue.asStateFlow()
 
     private val _pendingCover = MutableStateFlow<PendingCoverUpload?>(null)
 
@@ -186,63 +252,124 @@ class ContainerViewModel @Inject constructor(
             @StringRes val resId: Int,
             val formatArgs: List<Any> = emptyList(),
         ) : ContainerEvent
+
+        /** The folder on screen was renamed/moved/deleted: ascend to its parent. */
+        data object PopBackStack : ContainerEvent
     }
 
     private val _events = Channel<ContainerEvent>(Channel.BUFFERED)
     val events: Flow<ContainerEvent> = _events.receiveAsFlow()
 
     init {
-        // Cross-screen announcements (e.g. the camera save) arrive on the
-        // app-level bus; this ViewModel outlives the camera screen in the
-        // back stack, and the buffered channel delivers them to the snackbar
-        // once the grid recomposes after the pop.
+        // Non-root screens can scan on entry straight away; the root screen
+        // waits for the storage-permission gate to call [onStorageReady].
+        if (!isRoot) refresh()
+        // Cross-screen announcements (camera save, cover capture, the
+        // pop-after-rename of a child screen) arrive on the app-level bus;
+        // this ViewModel outlives those screens in the back stack, and every
+        // mutation message also drives a rescan so the shared cache — and
+        // every live query in it — converges.
         viewModelScope.launch {
-            messageBus.messages.collect { sendEvent(it) }
+            messageBus.messages.collect { resId ->
+                sendEvent(resId)
+                if (resId in RESCAN_MESSAGES) scanner.rescan()
+            }
+        }
+    }
+
+    /** The screen's permission gate opened: create the root and index it. */
+    fun onStorageReady() = refresh()
+
+    /** Ensure the root exists, then index the filesystem (Mutex-coalesced). */
+    fun refresh() {
+        viewModelScope.launch {
+            if (store.ensureRoot()) scanner.rescan()
+        }
+    }
+
+    /** Overflow "Rescan storage": manual sync with whatever a file manager did. */
+    fun rescanNow() {
+        viewModelScope.launch {
+            store.ensureRoot()
+            scanner.rescan()
+            sendEvent(R.string.rescanned)
         }
     }
 
     // region containers
 
-    /** Creates a container under the node on screen (top level at root). */
-    fun createContainer(name: String) {
-        val parentId = if (nodeId == 0L) null else nodeId
+    /** Creates a folder under the one on screen (top level at the root). */
+    fun createContainer(rawName: String) {
+        val name = rawName.trim()
+        if (name.isEmpty()) {
+            viewModelScope.launch { sendEvent(R.string.error_blank_name) }
+            return
+        }
         viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                repository.createContainer(parentId, name)
-            }
-            when (outcome) {
-                ContainerRepository.MutationOutcome.Success ->
-                    sendEvent(R.string.container_created)
-                ContainerRepository.MutationOutcome.BlankName ->
-                    sendEvent(R.string.error_blank_name)
-                ContainerRepository.MutationOutcome.DuplicateName ->
-                    sendEvent(R.string.error_duplicate_name)
+            store.createFolder(folder, name)
+            scanner.rescan()
+            sendEvent(R.string.container_created)
+        }
+    }
+
+    /**
+     * Renames the folder at [path] (the screen's own or a child row). A
+     * rename of the folder on screen invalidates this route: the message
+     * goes out on the bus (the parent screen shows it) and this screen
+     * pops itself.
+     */
+    fun renameFolder(path: String, rawName: String) {
+        val name = rawName.trim()
+        if (name.isEmpty()) {
+            viewModelScope.launch { sendEvent(R.string.error_blank_name) }
+            return
+        }
+        val isSelf = path == folderPath
+        viewModelScope.launch {
+            store.renameFolder(File(path), name)
+            scanner.rescan()
+            if (isSelf) {
+                messageBus.post(R.string.container_saved)
+                _events.send(ContainerEvent.PopBackStack)
+            } else {
+                sendEvent(R.string.container_saved)
             }
         }
     }
 
-    fun renameContainer(id: Long, name: String) {
+    /** Refreshes [movableTargets] for the folder whose move sheet opens. */
+    fun requestMove(path: String) {
         viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) { repository.renameContainer(id, name) }
-            when (outcome) {
-                ContainerRepository.MutationOutcome.Success ->
-                    sendEvent(R.string.container_saved)
-                ContainerRepository.MutationOutcome.BlankName ->
-                    sendEvent(R.string.error_blank_name)
-                ContainerRepository.MutationOutcome.DuplicateName ->
-                    sendEvent(R.string.error_duplicate_name)
+            _moveExcludedPaths.value = store.descendantFolderPaths(File(path)).toSet()
+        }
+    }
+
+    /** Moves the folder at [sourcePath] into the folder at [targetFolderPath]. */
+    fun moveFolderTo(sourcePath: String, targetFolderPath: String) {
+        val isSelf = sourcePath == folderPath
+        viewModelScope.launch {
+            when (val result = store.moveFolder(File(sourcePath), File(targetFolderPath))) {
+                is InventoryStore.MoveResult.Success -> {
+                    scanner.rescan()
+                    if (isSelf) {
+                        messageBus.post(R.string.container_moved)
+                        _events.send(ContainerEvent.PopBackStack)
+                    } else {
+                        sendEvent(R.string.container_moved)
+                    }
+                }
+                InventoryStore.MoveResult.Failed ->
+                    sendEvent(R.string.error_invalid_move_target)
             }
         }
     }
 
-    /** Loads [containerId]'s subtree sizes into the state's delete candidate. */
-    fun requestDelete(containerId: Long, name: String) {
+    /** Loads the subtree sizes of [path] into the state's delete candidate. */
+    fun requestDelete(path: String, name: String) {
         viewModelScope.launch {
-            val (containers, photos) = withContext(Dispatchers.IO) {
-                repository.subtreeCounts(containerId)
-            }
+            val (containers, photos) = store.subtreeCounts(File(path))
             _deleteCandidate.value = DeleteCandidate(
-                id = containerId,
+                path = path,
                 name = name,
                 childContainers = containers,
                 childPhotos = photos,
@@ -250,13 +377,20 @@ class ContainerViewModel @Inject constructor(
         }
     }
 
-    /** Deletes the confirmed container; the FK cascades its whole subtree. */
+    /** Deletes the confirmed folder with its whole subtree. */
     fun confirmDelete() {
         val candidate = _deleteCandidate.value ?: return
         _deleteCandidate.value = null
+        val isSelf = candidate.path == folderPath
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.deleteContainer(candidate.id) }
-            sendEvent(R.string.container_deleted)
+            store.deleteFolder(File(candidate.path))
+            scanner.rescan()
+            if (isSelf) {
+                messageBus.post(R.string.container_deleted)
+                _events.send(ContainerEvent.PopBackStack)
+            } else {
+                sendEvent(R.string.container_deleted)
+            }
         }
     }
 
@@ -265,68 +399,42 @@ class ContainerViewModel @Inject constructor(
     }
 
     /**
-     * Refreshes [movableTargets] for the container whose move sheet is about
-     * to open: the container itself and its whole subtree vanish from the
-     * picker, so a cycle can never even be tapped.
+     * Reads a gallery-picked cover into a staged file off the main thread
+     * and parks it in [pendingCover] for the confirm dialog; a cancelled
+     * pick is a no-op and an unreadable one reports [R.string.error_invalid_image].
      */
-    fun requestMove(containerId: Long) {
-        viewModelScope.launch {
-            _moveExcludedIds.value = withContext(Dispatchers.IO) {
-                repository.excludedIdsForMoves(containerId)
-            }
-        }
-    }
-
-    /** Moves container [containerId] (the open node or a child row) into [targetId]. */
-    fun moveContainerTo(containerId: Long, targetId: Long) {
-        viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                repository.moveContainer(containerId, targetId)
-            }
-            when (outcome) {
-                ContainerRepository.MoveOutcome.Success -> sendEvent(R.string.container_moved)
-                ContainerRepository.MoveOutcome.InvalidTarget ->
-                    sendEvent(R.string.error_invalid_move_target)
-            }
-        }
-    }
-
-    /**
-     * Reads a gallery-picked cover to bytes off the main thread and parks it
-     * in [pendingCover] for the confirm dialog; a cancelled pick is a no-op
-     * and an unreadable or empty one reports [R.string.error_invalid_image].
-     */
-    fun onCoverImagePicked(containerId: Long, uri: Uri?) {
+    fun onCoverImagePicked(coverFolderPath: String, uri: Uri?) {
         if (uri == null) return
         viewModelScope.launch {
-            val bytes = withContext(Dispatchers.IO) {
-                runCatching {
-                    context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                }.getOrNull()
-            }
-            if (bytes == null || bytes.isEmpty()) {
+            val staged = store.stageUri(uri)
+            if (staged == null) {
                 sendEvent(R.string.error_invalid_image)
             } else {
-                _pendingCover.value = PendingCoverUpload(containerId = containerId, bytes = bytes)
+                _pendingCover.value = PendingCoverUpload(coverFolderPath, staged)
             }
         }
     }
 
     /**
-     * Stores the pending cover; the row refreshes through the live query.
-     * An undecodable pick surfaces as [R.string.error_invalid_image]
-     * instead of crashing; the pending image is cleared either way.
+     * Stores the pending cover as `_cover.jpg` in its folder; the row
+     * refreshes through the cache. A non-JPEG pick or a failed rename
+     * surfaces as [R.string.error_invalid_image]; the staged file is
+     * cleared either way.
      */
     fun confirmCoverUpload() {
         val pending = _pendingCover.value ?: return
         viewModelScope.launch {
             try {
-                withContext(Dispatchers.IO) {
-                    repository.setCoverImage(pending.containerId, pending.bytes)
-                }
+                store.setCover(File(pending.folderPath), pending.file)
                 _pendingCover.value = null
+                scanner.rescan()
                 sendEvent(R.string.cover_updated)
             } catch (exception: IllegalArgumentException) {
+                discardStaged(pending.file)
+                _pendingCover.value = null
+                sendEvent(R.string.error_invalid_image)
+            } catch (exception: IOException) {
+                discardStaged(pending.file)
                 _pendingCover.value = null
                 sendEvent(R.string.error_invalid_image)
             }
@@ -335,13 +443,16 @@ class ContainerViewModel @Inject constructor(
 
     /** Throws away the pending cover without storing anything. */
     fun discardCoverUpload() {
+        val pending = _pendingCover.value ?: return
         _pendingCover.value = null
+        discardStaged(pending.file)
     }
 
-    /** Clears [containerId]'s cover photo. */
-    fun removeCoverImage(containerId: Long) {
+    /** Deletes the cover file of the folder at [path]. */
+    fun removeCoverImage(path: String) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.setCoverImage(containerId, null) }
+            store.removeCover(File(path))
+            scanner.rescan()
             sendEvent(R.string.cover_updated)
         }
     }
@@ -355,62 +466,74 @@ class ContainerViewModel @Inject constructor(
         clearSelection()
     }
 
-    fun enterSelectionMode(id: Long) {
-        _selectedPhotoIds.value = setOf(id)
+    /** Switches the in-container search scope: this folder only / whole subtree. */
+    fun onScopeChange(here: Boolean) {
+        _searchScopeHere.value = here
     }
 
-    fun toggleSelection(id: Long) {
-        _selectedPhotoIds.update { current ->
-            if (id in current) current - id else current + id
+    fun enterSelectionMode(path: String) {
+        _selectedPaths.value = setOf(path)
+    }
+
+    fun toggleSelection(path: String) {
+        _selectedPaths.update { current ->
+            if (path in current) current - path else current + path
         }
     }
 
     fun clearSelection() {
-        _selectedPhotoIds.value = emptySet()
+        _selectedPaths.value = emptySet()
     }
 
     /**
-     * Reads gallery [uris] to bytes off the main thread and feeds them to
-     * [onImagesPicked]; unreadable or empty results are dropped.
+     * Copies gallery [uris] into staged files (byte-identical — the
+     * originals stay in the gallery) and feeds them to the save queue;
+     * unreadable or empty results are dropped.
      */
     fun onGalleryUrisPicked(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
-            val images = withContext(Dispatchers.IO) {
-                uris.mapNotNull { uri ->
-                    runCatching {
-                        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    }.getOrNull()
-                }.filter { it.isNotEmpty() }
-            }
-            onImagesPicked(images)
+            val staged = uris.mapNotNull { uri -> store.stageUri(uri) }
+            onImagesPicked(staged)
         }
     }
 
-    fun onImagesPicked(images: List<ByteArray>) {
+    fun onImagesPicked(images: List<File>) {
         if (images.isEmpty()) return
         _pendingQueue.value = images
     }
 
     /**
-     * Saves the queue head with its (required) description. Success pops the
-     * head so the sheet advances to the next image; an undecodable head is
-     * dropped with an error so a broken image cannot stall the queue.
+     * Saves the queue head into the folder on screen with its (required)
+     * description. Success pops the head (the staged file was promoted to
+     * a permanent JPEG) and rescans; an undecodable head is dropped with
+     * an error so a broken image cannot stall the queue.
      */
     fun savePendingPhoto(rawDescription: String, rawNote: String?) {
         val head = _pendingQueue.value.firstOrNull() ?: return
+        val description = rawDescription.trim()
+        if (description.isEmpty()) {
+            viewModelScope.launch { sendEvent(R.string.error_blank_description) }
+            return
+        }
         viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                repository.addPhoto(nodeId, head, rawDescription, rawNote)
-            }
-            when (outcome) {
-                ContainerRepository.AddOutcome.Success -> {
+            when (
+                val outcome = store.addPhoto(
+                    folder = folder,
+                    staged = head,
+                    description = description,
+                    note = rawNote?.trim()?.ifEmpty { null },
+                )
+            ) {
+                InventoryStore.AddOutcome.Success -> {
                     _pendingQueue.update { queue -> queue.drop(1) }
+                    scanner.rescan()
                     sendEvent(R.string.photo_added)
                 }
-                ContainerRepository.AddOutcome.BlankDescription ->
+                InventoryStore.AddOutcome.BlankDescription ->
                     sendEvent(R.string.error_blank_description)
-                ContainerRepository.AddOutcome.InvalidImage -> {
+                InventoryStore.AddOutcome.InvalidImage -> {
+                    discardStaged(head)
                     _pendingQueue.update { queue -> queue.drop(1) }
                     sendEvent(R.string.error_invalid_image)
                 }
@@ -419,58 +542,101 @@ class ContainerViewModel @Inject constructor(
     }
 
     fun discardPendingPhotos() {
+        val queue = _pendingQueue.value
         _pendingQueue.value = emptyList()
+        viewModelScope.launch {
+            queue.forEach { file -> store.unstage(file) }
+        }
     }
 
-    fun deletePhoto(id: Long) {
+    fun deletePhoto(path: String) {
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.deletePhoto(id) }
-            _selectedPhotoIds.update { current -> current - id }
+            store.deletePhoto(File(path))
+            scanner.rescan()
+            _selectedPaths.update { current -> current - path }
             sendEvent(R.string.photo_deleted)
         }
     }
 
-    /** Deletes every selected photo; the confirmation itself lives in the UI. */
+    /** Deletes every selected photo file; the confirmation itself lives in the UI. */
     fun deleteSelected() {
-        val ids = _selectedPhotoIds.value
-        if (ids.isEmpty()) return
+        val paths = _selectedPaths.value.toList()
+        if (paths.isEmpty()) return
         viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                ids.forEach { repository.deletePhoto(it) }
-            }
+            paths.forEach { path -> store.deletePhoto(File(path)) }
+            scanner.rescan()
             clearSelection()
             sendEvent(R.string.photo_deleted)
         }
     }
 
-    /** Moves every selected photo to [targetContainerId]; confirmation is in the UI. */
-    fun moveSelected(targetContainerId: Long) {
-        val ids = _selectedPhotoIds.value.toList()
-        if (ids.isEmpty()) return
+    /** Moves every selected photo into [targetFolderPath]; confirmation is in the UI. */
+    fun moveSelected(targetFolderPath: String) {
+        val paths = _selectedPaths.value.toList()
+        if (paths.isEmpty()) return
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.movePhotos(ids, targetContainerId) }
+            val moved = store.movePhotos(paths.map(::File), File(targetFolderPath))
+            scanner.rescan()
             clearSelection()
-            sendEvent(R.string.photos_moved, listOf(ids.size))
+            sendEvent(R.string.photos_moved, listOf(moved))
         }
     }
 
-    fun updatePhotoDetails(id: Long, rawDescription: String, rawNote: String?) {
+    /**
+     * Rewrites a photo's EXIF description/note — and renames the file when
+     * the sanitized description differs from the current name. The tile
+     * updates through the rescan.
+     */
+    fun updatePhotoDetails(entry: CacheEntry, rawDescription: String, rawNote: String?) {
+        val description = rawDescription.trim()
+        if (description.isEmpty()) {
+            viewModelScope.launch { sendEvent(R.string.error_blank_description) }
+            return
+        }
         viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                repository.updatePhotoDetails(id, rawDescription, rawNote)
-            }
-            when (outcome) {
-                ContainerRepository.UpdateOutcome.Success ->
+            when (
+                store.updatePhotoMetadata(File(entry.path), description, rawNote?.trim()?.ifEmpty { null })
+            ) {
+                InventoryStore.UpdateOutcome.Success -> {
+                    scanner.rescan()
                     sendEvent(R.string.photo_saved)
-                ContainerRepository.UpdateOutcome.BlankDescription ->
+                }
+                InventoryStore.UpdateOutcome.BlankDescription ->
                     sendEvent(R.string.error_blank_description)
+                InventoryStore.UpdateOutcome.InvalidImage ->
+                    sendEvent(R.string.error_invalid_image)
             }
         }
     }
 
     // endregion
 
+    private fun CacheEntry.toFolderChoice(): FolderChoice = FolderChoice(
+        path = path,
+        label = displayLabel(path),
+    )
+
+    /** "/root/Building/Shelf A" → "Building / Shelf A" (relative to the storage root). */
+    private fun displayLabel(path: String): String =
+        path.removePrefix(store.rootPath).trim('/').split('/').filter(String::isNotBlank)
+            .joinToString(" / ").ifEmpty { path }
+
+    private fun discardStaged(file: File) {
+        viewModelScope.launch { store.unstage(file) }
+    }
+
     private suspend fun sendEvent(@StringRes resId: Int, formatArgs: List<Any> = emptyList()) {
         _events.send(ContainerEvent.ShowMessage(resId, formatArgs))
+    }
+
+    /** Mutation announcements that mean "the disk changed somewhere; re-index". */
+    private companion object {
+        val RESCAN_MESSAGES = setOf(
+            R.string.photo_added,
+            R.string.cover_updated,
+            R.string.container_saved,
+            R.string.container_moved,
+            R.string.container_deleted,
+        )
     }
 }

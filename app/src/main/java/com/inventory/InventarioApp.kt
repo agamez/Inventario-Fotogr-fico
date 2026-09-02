@@ -1,22 +1,12 @@
 package com.inventory
 
 import android.app.Application
-import coil.ImageLoader
-import coil.ImageLoaderFactory
-import com.inventory.image.ByteArrayFetcher
-import com.inventory.image.ByteArrayKeyer
 import dagger.hilt.android.HiltAndroidApp
 
+/**
+ * Plain application: images are loaded from their files straight through
+ * Coil's built-in File support, so no custom ImageLoader (and no BLOB
+ * plumbing) is needed anymore.
+ */
 @HiltAndroidApp
-class InventarioApp : Application(), ImageLoaderFactory {
-
-    override fun newImageLoader(): ImageLoader {
-        return ImageLoader.Builder(this)
-            .crossfade(true)
-            .components {
-                add(ByteArrayKeyer())
-                add(ByteArrayFetcher.Factory())
-            }
-            .build()
-    }
-}
+class InventarioApp : Application()

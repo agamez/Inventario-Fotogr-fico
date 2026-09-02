@@ -5,11 +5,11 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.R
-import com.inventory.feature.containers.ContainerRepository
+import com.inventory.storage.InventoryStore
 import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.io.File
 import javax.inject.Inject
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,30 +17,32 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /**
- * Holds a single captured frame and its mandatory-metadata save flow for one
- * container. The target container id arrives as the navigation argument
- * `nodeId`.
+ * Holds a single captured frame and its mandatory-metadata save flow for
+ * one container folder. The target folder's absolute path arrives as the
+ * (URL-decoded) navigation argument `path` — contractual with
+ * [com.inventory.feature.navigation.Screens.ARG_PATH].
  *
- * The captured bytes live in [pending] (kept out of any equality-heavy UI
+ * Captured bytes are staged verbatim (no resize, no recompression) as a
+ * file under `cacheDir/pending` until the description confirms; the
+ * staged file lives in [pending] (kept out of any equality-heavy UI
  * state); success navigates back via [CameraEvent.NavigateBack].
  */
 @HiltViewModel
 class CameraViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val repository: ContainerRepository,
+    private val store: InventoryStore,
     private val messageBus: UserMessageBus,
 ) : ViewModel() {
 
-    /** Id of the container the photo will be stored in; supplied by the nav route. */
-    val nodeId: Long = checkNotNull(savedStateHandle["nodeId"])
+    /** Path of the folder the photo will be stored in; supplied by the nav route. */
+    val folderPath: String = checkNotNull(savedStateHandle["path"])
 
-    private val _pending = MutableStateFlow<ByteArray?>(null)
+    private val _pending = MutableStateFlow<File?>(null)
 
-    /** The just-captured image awaiting its description, or null. */
-    val pending: StateFlow<ByteArray?> = _pending.asStateFlow()
+    /** The staged capture awaiting its description, or null. */
+    val pending: StateFlow<File?> = _pending.asStateFlow()
 
     /** One-shot UI events, consumed exactly once by the screen. */
     sealed interface CameraEvent {
@@ -51,36 +53,50 @@ class CameraViewModel @Inject constructor(
     private val _events = Channel<CameraEvent>(Channel.BUFFERED)
     val events: Flow<CameraEvent> = _events.receiveAsFlow()
 
+    /** Stages the fresh capture bytes verbatim, replacing any earlier pending frame. */
     fun onCaptured(bytes: ByteArray) {
-        _pending.value = bytes
+        viewModelScope.launch {
+            _pending.value?.let { store.unstage(it) }
+            _pending.value = store.stageBytes(bytes)
+        }
     }
 
+    /** Throws away the pending staged frame. */
     fun discardPending() {
+        val file = _pending.value ?: return
         _pending.value = null
+        viewModelScope.launch { store.unstage(file) }
     }
 
     /**
-     * Stores the pending frame in [nodeId]; on success the pending image is
-     * cleared, [R.string.photo_added] is posted to the app-level
-     * [UserMessageBus] (the container screen shows the snackbar when it
-     * returns) and the screen is asked to navigate back. An undecodable
-     * frame is dropped so the user can retake it.
+     * Writes the pending frame into the target folder via
+     * [InventoryStore.addPhoto] (byte-identical copy + EXIF stamp); on
+     * success the staged file is gone, [R.string.photo_added] is posted to
+     * the app-level [UserMessageBus] (the container screen rescans and
+     * shows the snackbar when it returns) and the screen is asked to
+     * navigate back. A rejected frame is unstaged and reported so the user
+     * can retake it.
      */
     fun save(rawDescription: String, rawNote: String?) {
-        val bytes = _pending.value ?: return
+        val staged = _pending.value ?: return
         viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                repository.addPhoto(nodeId, bytes, rawDescription, rawNote)
-            }
-            when (outcome) {
-                ContainerRepository.AddOutcome.Success -> {
+            when (
+                store.addPhoto(
+                    folder = File(folderPath),
+                    staged = staged,
+                    description = rawDescription.trim(),
+                    note = rawNote?.trim()?.ifEmpty { null },
+                )
+            ) {
+                InventoryStore.AddOutcome.Success -> {
                     _pending.value = null
                     messageBus.post(R.string.photo_added)
                     _events.send(CameraEvent.NavigateBack)
                 }
-                ContainerRepository.AddOutcome.BlankDescription ->
+                InventoryStore.AddOutcome.BlankDescription ->
                     sendEvent(R.string.error_blank_description)
-                ContainerRepository.AddOutcome.InvalidImage -> {
+                InventoryStore.AddOutcome.InvalidImage -> {
+                    store.unstage(staged)
                     _pending.value = null
                     sendEvent(R.string.error_invalid_image)
                 }

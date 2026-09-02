@@ -1,5 +1,7 @@
 package com.inventory.feature.containers
 
+import android.Manifest
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -34,13 +36,15 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -51,6 +55,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -63,6 +68,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -88,42 +94,47 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.inventory.R
-import com.inventory.database.ContainerEntity
-import com.inventory.database.ContainerPath
-import com.inventory.database.ContainerWithCounts
-import com.inventory.database.PhotoEntity
+import com.inventory.cache.CacheEntry
+import com.inventory.cache.ChildCounts
+import com.inventory.storage.InventoryStore
+import com.inventory.storage.StorageAccess
+import java.io.File
 
 /** Maximum number of images the gallery picker may return at once. */
 private const val MAX_GALLERY_IMAGES = 10
 
 /**
- * The one browse screen of the hierarchical inventory, used for the virtual
- * root ([nodeId] = 0, home: top-level containers, global search icon, FAB
- * adds a container) and for any container (children + photos, in-container
- * search, long-press multi-select, full-screen preview, cover and subtree
- * actions in the overflow menu).
+ * The one browse screen of the filesystem inventory, used for the storage
+ * root (no path argument: home — wrapped in the storage-permission gate,
+ * top-level containers, global search icon, FAB adds a container) and for
+ * any container folder (children + photos, in-container search with a
+ * here/subtree scope, long-press multi-select, full-screen preview, cover
+ * and subtree actions in the overflow menu, "Rescan storage").
+ *
+ * Rows are cache entries; pictures are loaded straight from disk by Coil.
  *
  * Navigation is owned by the caller: [onOpenContainer] descends into a
- * child, [onOpenCamera] and the gallery picker attach photos to this node,
- * [onOpenCoverCapture] photographs a cover for the addressed container,
- * [onOpenSearch] opens the global search and [onBack] ascends (unused at
- * the root).
+ * child folder, [onOpenCamera] and the gallery picker attach photos to
+ * this folder, [onOpenCoverCapture] photographs a cover for the addressed
+ * folder (path arguments), [onOpenSearch] opens the global search,
+ * [onBack] ascends (and also leaves a folder that was just
+ * renamed/moved/deleted — its route went stale).
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ContainerScreen(
-    nodeId: Long,
-    onOpenContainer: (Long) -> Unit,
-    onOpenCamera: (Long) -> Unit,
-    onOpenCoverCapture: (Long) -> Unit,
+    onOpenContainer: (String) -> Unit,
+    onOpenCamera: (String) -> Unit,
+    onOpenCoverCapture: (String) -> Unit,
     onOpenSearch: () -> Unit,
     onBack: () -> Unit,
     viewModel: ContainerViewModel = hiltViewModel(),
 ) {
-    val isRoot = nodeId == 0L
+    val isRoot = viewModel.isRoot
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val pendingQueue by viewModel.pendingQueue.collectAsStateWithLifecycle()
     val pendingCover by viewModel.pendingCover.collectAsStateWithLifecycle()
@@ -132,17 +143,18 @@ fun ContainerScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
+    var hasStorageAccess by remember { mutableStateOf(StorageAccess.hasStorageAccess(context)) }
     var searchExpanded by remember { mutableStateOf(false) }
     var showFabSheet by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
-    var containerToRename by remember { mutableStateOf<RenameTarget?>(null) }
-    var containerToMove by remember { mutableStateOf<Long?>(null) }
+    var folderToRename by remember { mutableStateOf<RenameTarget?>(null) }
+    var folderToMove by remember { mutableStateOf<String?>(null) }
     var showPhotoMoveSheet by remember { mutableStateOf(false) }
     var confirmDeleteSelection by remember { mutableStateOf(false) }
-    var photoToDelete by remember { mutableStateOf<PhotoEntity?>(null) }
-    var fullScreenPhotoId by remember { mutableStateOf<Long?>(null) }
+    var photoToDelete by remember { mutableStateOf<CacheEntry?>(null) }
+    var fullScreenPhotoPath by remember { mutableStateOf<String?>(null) }
     var showCoverSheet by remember { mutableStateOf(false) }
-    var coverTargetId by remember { mutableStateOf<Long?>(null) }
+    var coverTargetPath by remember { mutableStateOf<String?>(null) }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_GALLERY_IMAGES),
@@ -151,9 +163,40 @@ fun ContainerScreen(
     val coverPickLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri ->
-        val targetId = coverTargetId
-        if (uri != null && targetId != null) {
-            viewModel.onCoverImagePicked(targetId, uri)
+        val target = coverTargetPath
+        if (uri != null && target != null) {
+            viewModel.onCoverImagePicked(target, uri)
+        }
+    }
+
+    val storagePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { hasStorageAccess = StorageAccess.hasStorageAccess(context) }
+
+    // Re-check on resume: All Files Access is granted on a system settings
+    // page (and runtime permissions can change in Settings), exactly like
+    // the camera gate in CameraCaptureCore.
+    LifecycleResumeEffect(hasStorageAccess) {
+        hasStorageAccess = StorageAccess.hasStorageAccess(context)
+        onPauseOrDispose { }
+    }
+
+    // The moment access is on, the root must exist and the index must fill.
+    LaunchedEffect(hasStorageAccess) {
+        if (hasStorageAccess) viewModel.onStorageReady()
+    }
+
+    fun requestStorageAccess() {
+        val intent: Intent? = StorageAccess.storageIntent(context)
+        if (intent != null) {
+            context.startActivity(intent)
+        } else {
+            storagePermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                ),
+            )
         }
     }
 
@@ -163,17 +206,37 @@ fun ContainerScreen(
                 is ContainerViewModel.ContainerEvent.ShowMessage -> snackbarHostState.showSnackbar(
                     context.getString(event.resId, *event.formatArgs.toTypedArray()),
                 )
+                ContainerViewModel.ContainerEvent.PopBackStack -> onBack()
             }
         }
     }
 
-    // The container on screen vanished (deleted from this very screen's
-    // menu): ascend instead of staring at an empty title.
-    LaunchedEffect(uiState.isLoading, uiState.container) {
-        if (!isRoot && !uiState.isLoading && uiState.container == null) onBack()
+    // The folder on screen vanished (deleted, or renamed/moved through its
+    // own menu): ascend instead of staring at an empty title.
+    LaunchedEffect(uiState.folderMissing) {
+        if (uiState.folderMissing) onBack()
     }
 
-    val selectedCount = uiState.selectedPhotoIds.size
+    // Root destination behind the storage gate: nothing else is reachable
+    // until the PhotoInventory folder can actually be read and written.
+    if (isRoot && !hasStorageAccess) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(title = { Text(stringResource(R.string.title_inventory)) })
+            },
+        ) { innerPadding ->
+            StoragePermissionGate(
+                onGrant = ::requestStorageAccess,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+            )
+        }
+        return
+    }
+
+    val selectedCount = uiState.selectedPaths.size
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -220,8 +283,9 @@ fun ContainerScreen(
                                 text = if (isRoot) {
                                     stringResource(R.string.title_inventory)
                                 } else {
-                                    uiState.container?.name
-                                        ?: stringResource(R.string.container_fallback_title)
+                                    uiState.containerName.ifEmpty {
+                                        stringResource(R.string.container_fallback_title)
+                                    }
                                 },
                             )
                         },
@@ -241,6 +305,12 @@ fun ContainerScreen(
                                     Icon(
                                         imageVector = Icons.Filled.Search,
                                         contentDescription = stringResource(R.string.open_search),
+                                    )
+                                }
+                                IconButton(onClick = viewModel::rescanNow) {
+                                    Icon(
+                                        imageVector = Icons.Filled.Refresh,
+                                        contentDescription = stringResource(R.string.rescan_storage),
                                     )
                                 }
                             } else {
@@ -263,38 +333,49 @@ fun ContainerScreen(
                                         contentDescription = stringResource(R.string.search_toggle),
                                     )
                                 }
-                                uiState.container?.let { container ->
-                                    ContainerOptionsAction(
-                                        container = container,
-                                        onRename = { id, name -> containerToRename = RenameTarget(id, name) },
-                                        onMove = { id ->
-                                            viewModel.requestMove(id)
-                                            containerToMove = id
-                                        },
-                                        onSetPhoto = { id ->
-                                            coverTargetId = id
-                                            showCoverSheet = true
-                                        },
-                                        onRemovePhoto = viewModel::removeCoverImage,
-                                        onDelete = { id, name ->
-                                            viewModel.requestDelete(id, name)
-                                        },
-                                    )
-                                }
+                                ContainerOptionsAction(
+                                    folderPath = viewModel.folderPath,
+                                    folderName = uiState.containerName,
+                                    hasCover = uiState.hasCover,
+                                    onRename = { path, name -> folderToRename = RenameTarget(path, name) },
+                                    onMove = { path ->
+                                        viewModel.requestMove(path)
+                                        folderToMove = path
+                                    },
+                                    onSetPhoto = { path ->
+                                        coverTargetPath = path
+                                        showCoverSheet = true
+                                    },
+                                    onRemovePhoto = viewModel::removeCoverImage,
+                                    onRescan = viewModel::rescanNow,
+                                    onDelete = viewModel::requestDelete,
+                                )
                             }
                         },
                     )
-                    if (uiState.searchQuery.isNotEmpty() ||
-                        (searchExpanded && uiState.photos.isNotEmpty())
-                    ) {
+                    // The field must stay open while it is being typed in,
+                    // even when the current query/scope yields no photos at
+                    // all (e.g. subtree searching an empty folder).
+                    if (uiState.searchQuery.isNotEmpty() || searchExpanded) {
                         SearchField(
                             query = uiState.searchQuery,
                             onQueryChange = viewModel::onSearchQueryChange,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 12.dp),
                         )
+                        SearchScopeRow(
+                            scopeHere = uiState.searchScopeHere,
+                            onScopeChange = viewModel::onScopeChange,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp),
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
                     }
+                }
+                if (uiState.scanning) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
             }
         },
@@ -316,102 +397,117 @@ fun ContainerScreen(
             }
         },
     ) { innerPadding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding),
         ) {
-            when {
-                uiState.isLoading -> {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
-                }
+            if (uiState.conflictCount > 0) {
+                ConflictBanner(
+                    count = uiState.conflictCount,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            Box(modifier = Modifier.fillMaxSize()) {
+                when {
+                    uiState.isLoading -> {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    }
 
-                uiState.children.isEmpty() &&
-                    (isRoot || (uiState.photos.isEmpty() && uiState.searchQuery.isBlank())) -> {
-                    val messageResId = if (isRoot) R.string.inventory_empty else R.string.empty_containers
-                    EmptyContainerPlaceholder(
-                        messageResId = messageResId,
-                        modifier = Modifier.align(Alignment.Center),
-                    )
-                }
-
-                else -> {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(2),
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalArrangement = Arrangement.spacedBy(2.dp),
-                    ) {
-                        if (uiState.children.isNotEmpty()) {
-                            item(
-                                key = "containers-header",
-                                span = { GridItemSpan(maxLineSpan) },
-                            ) {
-                                SectionHeader(stringResource(R.string.containers_section))
-                            }
-                            items(
-                                items = uiState.children,
-                                key = { entry -> entry.container.id },
-                                span = { GridItemSpan(maxLineSpan) },
-                            ) { entry ->
-                                ContainerRow(
-                                    entry = entry,
-                                    onOpen = { onOpenContainer(entry.container.id) },
-                                    onRename = { id, name -> containerToRename = RenameTarget(id, name) },
-                                    onMove = { id ->
-                                        viewModel.requestMove(id)
-                                        containerToMove = id
-                                    },
-                                    onSetPhoto = { id ->
-                                        coverTargetId = id
-                                        showCoverSheet = true
-                                    },
-                                    onRemovePhoto = viewModel::removeCoverImage,
-                                    onDelete = { id, name -> viewModel.requestDelete(id, name) },
-                                )
-                            }
+                    uiState.children.isEmpty() &&
+                        (isRoot || (uiState.photos.isEmpty() && uiState.searchQuery.isBlank())) -> {
+                        val messageResId = if (isRoot) {
+                            R.string.inventory_empty
+                        } else {
+                            R.string.empty_containers
                         }
-                        if (!isRoot) {
-                            if (uiState.photos.isNotEmpty()) {
+                        EmptyContainerPlaceholder(
+                            messageResId = messageResId,
+                            modifier = Modifier.align(Alignment.Center),
+                        )
+                    }
+
+                    else -> {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(2),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(2.dp),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            if (uiState.children.isNotEmpty()) {
                                 item(
-                                    key = "photos-header",
+                                    key = "containers-header",
                                     span = { GridItemSpan(maxLineSpan) },
                                 ) {
-                                    SectionHeader(stringResource(R.string.photos_section))
+                                    SectionHeader(stringResource(R.string.containers_section))
                                 }
                                 items(
-                                    items = uiState.photos,
-                                    key = { photo -> photo.id },
-                                ) { photo ->
-                                    PhotoTile(
-                                        photo = photo,
-                                        selectionMode = uiState.selectionMode,
-                                        selected = photo.id in uiState.selectedPhotoIds,
-                                        onClick = {
-                                            if (uiState.selectionMode) {
-                                                viewModel.toggleSelection(photo.id)
-                                            } else {
-                                                fullScreenPhotoId = photo.id
-                                            }
+                                    items = uiState.children,
+                                    key = { entry -> entry.path },
+                                    span = { GridItemSpan(maxLineSpan) },
+                                ) { entry ->
+                                    ContainerRow(
+                                        entry = entry,
+                                        counts = uiState.childCounts[entry.path],
+                                        onOpen = { onOpenContainer(entry.path) },
+                                        onRename = { path, name ->
+                                            folderToRename = RenameTarget(path, name)
                                         },
-                                        onLongClick = { viewModel.enterSelectionMode(photo.id) },
+                                        onMove = { path ->
+                                            viewModel.requestMove(path)
+                                            folderToMove = path
+                                        },
+                                        onSetPhoto = { path ->
+                                            coverTargetPath = path
+                                            showCoverSheet = true
+                                        },
+                                        onRemovePhoto = viewModel::removeCoverImage,
+                                        onDelete = { path, name -> viewModel.requestDelete(path, name) },
                                     )
                                 }
-                            } else if (uiState.searchQuery.isNotBlank()) {
-                                item(
-                                    key = "no-results",
-                                    span = { GridItemSpan(maxLineSpan) },
-                                ) {
-                                    Text(
-                                        text = stringResource(R.string.no_search_results),
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(24.dp),
-                                    )
+                            }
+                            if (!isRoot) {
+                                if (uiState.photos.isNotEmpty()) {
+                                    item(
+                                        key = "photos-header",
+                                        span = { GridItemSpan(maxLineSpan) },
+                                    ) {
+                                        SectionHeader(stringResource(R.string.photos_section))
+                                    }
+                                    items(
+                                        items = uiState.photos,
+                                        key = { photo -> photo.path },
+                                    ) { photo ->
+                                        PhotoTile(
+                                            photo = photo,
+                                            selectionMode = uiState.selectionMode,
+                                            selected = photo.path in uiState.selectedPaths,
+                                            onClick = {
+                                                if (uiState.selectionMode) {
+                                                    viewModel.toggleSelection(photo.path)
+                                                } else {
+                                                    fullScreenPhotoPath = photo.path
+                                                }
+                                            },
+                                            onLongClick = { viewModel.enterSelectionMode(photo.path) },
+                                        )
+                                    }
+                                } else if (uiState.searchQuery.isNotBlank()) {
+                                    item(
+                                        key = "no-results",
+                                        span = { GridItemSpan(maxLineSpan) },
+                                    ) {
+                                        Text(
+                                            text = stringResource(R.string.no_search_results),
+                                            style = MaterialTheme.typography.bodyLarge,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = TextAlign.Center,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(24.dp),
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -430,7 +526,7 @@ fun ContainerScreen(
             },
             onTakePhoto = {
                 showFabSheet = false
-                onOpenCamera(nodeId)
+                onOpenCamera(viewModel.folderPath)
             },
             onChooseFromGallery = {
                 showFabSheet = false
@@ -453,27 +549,27 @@ fun ContainerScreen(
         )
     }
 
-    containerToRename?.let { target ->
-        key(target.id) {
+    folderToRename?.let { target ->
+        key(target.path) {
             ContainerNameDialog(
                 title = stringResource(R.string.rename_container),
                 initialName = target.name,
-                onDismiss = { containerToRename = null },
+                onDismiss = { folderToRename = null },
                 onConfirm = { name ->
-                    viewModel.renameContainer(target.id, name)
-                    containerToRename = null
+                    viewModel.renameFolder(target.path, name)
+                    folderToRename = null
                 },
             )
         }
     }
 
-    containerToMove?.let { sourceId ->
+    folderToMove?.let { sourcePath ->
         ContainerPathPickerSheet(
             paths = movableTargets,
-            onDismiss = { containerToMove = null },
-            onPathSelected = { path ->
-                viewModel.moveContainerTo(sourceId, path.id)
-                containerToMove = null
+            onDismiss = { folderToMove = null },
+            onPathSelected = { choice ->
+                viewModel.moveFolderTo(sourcePath, choice.path)
+                folderToMove = null
             },
         )
     }
@@ -482,8 +578,8 @@ fun ContainerScreen(
         ContainerPathPickerSheet(
             paths = photoMoveTargets,
             onDismiss = { showPhotoMoveSheet = false },
-            onPathSelected = { path ->
-                viewModel.moveSelected(path.id)
+            onPathSelected = { choice ->
+                viewModel.moveSelected(choice.path)
                 showPhotoMoveSheet = false
             },
         )
@@ -527,13 +623,18 @@ fun ContainerScreen(
             onDismissRequest = { photoToDelete = null },
             title = { Text(stringResource(R.string.delete_photo_title)) },
             text = {
-                Text(stringResource(R.string.delete_photo_message, photo.description))
+                Text(
+                    stringResource(
+                        R.string.delete_photo_message,
+                        photo.description ?: photo.name,
+                    ),
+                )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        viewModel.deletePhoto(photo.id)
-                        if (fullScreenPhotoId == photo.id) fullScreenPhotoId = null
+                        viewModel.deletePhoto(photo.path)
+                        if (fullScreenPhotoPath == photo.path) fullScreenPhotoPath = null
                         photoToDelete = null
                     },
                 ) {
@@ -548,18 +649,18 @@ fun ContainerScreen(
         )
     }
 
-    val fullScreenPhoto = uiState.photos.firstOrNull { it.id == fullScreenPhotoId }
-    LaunchedEffect(fullScreenPhotoId, fullScreenPhoto) {
-        if (fullScreenPhotoId != null && fullScreenPhoto == null) fullScreenPhotoId = null
+    val fullScreenPhoto = uiState.photos.firstOrNull { it.path == fullScreenPhotoPath }
+    LaunchedEffect(fullScreenPhotoPath, fullScreenPhoto) {
+        if (fullScreenPhotoPath != null && fullScreenPhoto == null) fullScreenPhotoPath = null
     }
     fullScreenPhoto?.let { photo ->
-        key(photo.id) {
+        key(photo.path) {
             FullScreenPhotoDialog(
                 photo = photo,
-                onClose = { fullScreenPhotoId = null },
+                onClose = { fullScreenPhotoPath = null },
                 onSave = { description, note ->
-                    viewModel.updatePhotoDetails(photo.id, description, note)
-                    fullScreenPhotoId = null
+                    viewModel.updatePhotoDetails(photo, description, note)
+                    fullScreenPhotoPath = null
                 },
                 onDelete = { photoToDelete = photo },
             )
@@ -569,7 +670,7 @@ fun ContainerScreen(
     pendingQueue.firstOrNull()?.let { head ->
         key(head) {
             PendingPhotoSaveSheet(
-                imageBytes = head,
+                imageFile = head,
                 remainingCount = pendingQueue.size - 1,
                 onSave = { description, note ->
                     viewModel.savePendingPhoto(description, note)
@@ -584,7 +685,7 @@ fun ContainerScreen(
             onDismiss = { showCoverSheet = false },
             onTakePhoto = {
                 showCoverSheet = false
-                coverTargetId?.let { containerId -> onOpenCoverCapture(containerId) }
+                coverTargetPath?.let { onOpenCoverCapture(it) }
             },
             onChooseFromGallery = {
                 showCoverSheet = false
@@ -598,7 +699,7 @@ fun ContainerScreen(
     pendingCover?.let { pending ->
         key(pending) {
             CoverConfirmDialog(
-                imageBytes = pending.bytes,
+                imageFile = pending.file,
                 onSave = viewModel::confirmCoverUpload,
                 onDiscard = viewModel::discardCoverUpload,
             )
@@ -606,18 +707,105 @@ fun ContainerScreen(
     }
 }
 
-/** Rename dialog target: the row/menu entry point only knows id and name. */
-private data class RenameTarget(val id: Long, val name: String)
+/** Rename dialog target: the row/menu entry point only knows path and name. */
+private data class RenameTarget(val path: String, val name: String)
 
-/** App-bar overflow button opening the container actions menu. */
+/**
+ * Root-destination gate shown while the app may not read and write
+ * external storage; mirrors the camera rationale style and is re-checked
+ * on resume (granting happens outside the app).
+ */
+@Composable
+private fun StoragePermissionGate(onGrant: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Filled.FolderOpen,
+            contentDescription = null,
+            modifier = Modifier.size(72.dp),
+            tint = MaterialTheme.colorScheme.outlineVariant,
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = stringResource(R.string.storage_permission_rationale),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(modifier = Modifier.height(24.dp))
+        Button(onClick = onGrant) {
+            Text(stringResource(R.string.grant_storage_access))
+        }
+    }
+}
+
+/** Full-width warning strip listing how many sync-conflicted entries await. */
+@Composable
+private fun ConflictBanner(count: Int, modifier: Modifier = Modifier) {
+    Surface(
+        modifier = modifier,
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Warning,
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.size(12.dp))
+            Text(
+                text = pluralStringResource(R.plurals.conflict_banner, count, count),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+}
+
+/** The two search-scope chips: photos of this folder only, or of the subtree. */
+@Composable
+private fun SearchScopeRow(
+    scopeHere: Boolean,
+    onScopeChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(
+            selected = scopeHere,
+            onClick = { onScopeChange(true) },
+            label = { Text(stringResource(R.string.search_scope_here)) },
+        )
+        FilterChip(
+            selected = !scopeHere,
+            onClick = { onScopeChange(false) },
+            label = { Text(stringResource(R.string.search_scope_subtree)) },
+        )
+    }
+}
+
+/** App-bar overflow button opening the folder actions menu. */
 @Composable
 private fun ContainerOptionsAction(
-    container: ContainerEntity,
-    onRename: (Long, String) -> Unit,
-    onMove: (Long) -> Unit,
-    onSetPhoto: (Long) -> Unit,
-    onRemovePhoto: (Long) -> Unit,
-    onDelete: (Long, String) -> Unit,
+    folderPath: String,
+    folderName: String,
+    hasCover: Boolean,
+    onRename: (String, String) -> Unit,
+    onMove: (String) -> Unit,
+    onSetPhoto: (String) -> Unit,
+    onRemovePhoto: (String) -> Unit,
+    onRescan: () -> Unit,
+    onDelete: (String, String) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -628,57 +816,76 @@ private fun ContainerOptionsAction(
             )
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            ContainerMenuItems(
-                container = container,
+            FolderMenuItems(
+                folderPath = folderPath,
+                folderName = folderName,
+                hasCover = hasCover,
                 onRequestClose = { expanded = false },
                 onRename = onRename,
                 onMove = onMove,
                 onSetPhoto = onSetPhoto,
                 onRemovePhoto = onRemovePhoto,
+                onRescan = onRescan,
                 onDelete = onDelete,
             )
         }
     }
 }
 
-/** The shared action list: rename, move, cover set/remove, delete. */
+/**
+ * The shared action list: rename, move, cover set/remove, rescan (only
+ * where an [onRescan] is offered — the screen menu, not child rows),
+ * delete.
+ */
 @Composable
-private fun ContainerMenuItems(
-    container: ContainerEntity,
+private fun FolderMenuItems(
+    folderPath: String,
+    folderName: String,
+    hasCover: Boolean,
     onRequestClose: () -> Unit,
-    onRename: (Long, String) -> Unit,
-    onMove: (Long) -> Unit,
-    onSetPhoto: (Long) -> Unit,
-    onRemovePhoto: (Long) -> Unit,
-    onDelete: (Long, String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onMove: (String) -> Unit,
+    onSetPhoto: (String) -> Unit,
+    onRemovePhoto: (String) -> Unit,
+    onRescan: (() -> Unit)?,
+    onDelete: (String, String) -> Unit,
 ) {
     DropdownMenuItem(
         text = { Text(stringResource(R.string.rename)) },
         onClick = {
             onRequestClose()
-            onRename(container.id, container.name)
+            onRename(folderPath, folderName)
         },
     )
     DropdownMenuItem(
         text = { Text(stringResource(R.string.move_container_to)) },
         onClick = {
             onRequestClose()
-            onMove(container.id)
+            onMove(folderPath)
         },
     )
     DropdownMenuItem(
         text = { Text(stringResource(R.string.set_photo)) },
         onClick = {
             onRequestClose()
-            onSetPhoto(container.id)
+            onSetPhoto(folderPath)
         },
     )
-    if (container.coverImage != null) {
+    if (hasCover) {
         DropdownMenuItem(
             text = { Text(stringResource(R.string.remove_photo)) },
             onClick = {
                 onRequestClose()
-                onRemovePhoto(container.id)
+                onRemovePhoto(folderPath)
+            },
+        )
+    }
+    if (onRescan != null) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.rescan_storage)) },
+            onClick = {
+                onRequestClose()
+                onRescan()
             },
         )
     }
@@ -686,7 +893,7 @@ private fun ContainerMenuItems(
         text = { Text(stringResource(R.string.delete)) },
         onClick = {
             onRequestClose()
-            onDelete(container.id, container.name)
+            onDelete(folderPath, folderName)
         },
     )
 }
@@ -695,13 +902,14 @@ private fun ContainerMenuItems(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ContainerRow(
-    entry: ContainerWithCounts,
+    entry: CacheEntry,
+    counts: ChildCounts?,
     onOpen: () -> Unit,
-    onRename: (Long, String) -> Unit,
-    onMove: (Long) -> Unit,
-    onSetPhoto: (Long) -> Unit,
-    onRemovePhoto: (Long) -> Unit,
-    onDelete: (Long, String) -> Unit,
+    onRename: (String, String) -> Unit,
+    onMove: (String) -> Unit,
+    onSetPhoto: (String) -> Unit,
+    onRemovePhoto: (String) -> Unit,
+    onDelete: (String, String) -> Unit,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
     Box {
@@ -712,25 +920,33 @@ private fun ContainerRow(
                     onClick = onOpen,
                     onLongClick = { menuExpanded = true },
                 ),
-            leadingContent = { CoverThumbnail(entry.container.coverImage) },
+            leadingContent = { CoverThumbnail(entry) },
             headlineContent = {
-                Text(
-                    text = entry.container.name,
-                    style = MaterialTheme.typography.titleMedium,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = entry.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (entry.isConflict) {
+                        ConflictBadge()
+                    }
+                }
             },
             supportingContent = {
                 Text(
                     text = pluralStringResource(
                         R.plurals.container_count,
-                        entry.childCount,
-                        entry.childCount,
+                        counts?.folders ?: 0,
+                        counts?.folders ?: 0,
                     ) +
                         " · " +
                         pluralStringResource(
                             R.plurals.photo_count,
-                            entry.photoCount,
-                            entry.photoCount,
+                            counts?.photos ?: 0,
+                            counts?.photos ?: 0,
                         ),
                     style = MaterialTheme.typography.bodyMedium,
                 )
@@ -745,13 +961,16 @@ private fun ContainerRow(
             },
         )
         DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
-            ContainerMenuItems(
-                container = entry.container,
+            FolderMenuItems(
+                folderPath = entry.path,
+                folderName = entry.name,
+                hasCover = entry.hasCover,
                 onRequestClose = { menuExpanded = false },
                 onRename = onRename,
                 onMove = onMove,
                 onSetPhoto = onSetPhoto,
                 onRemovePhoto = onRemovePhoto,
+                onRescan = null,
                 onDelete = onDelete,
             )
         }
@@ -759,12 +978,12 @@ private fun ContainerRow(
     }
 }
 
-/** Row thumbnail: the saved cover, or a neutral folder placeholder. */
+/** Row thumbnail: the folder's `_cover.jpg` from disk, or a neutral placeholder. */
 @Composable
-private fun CoverThumbnail(coverImage: ByteArray?) {
-    if (coverImage != null) {
+private fun CoverThumbnail(entry: CacheEntry) {
+    if (entry.hasCover) {
         AsyncImage(
-            model = coverImage,
+            model = File(entry.path).resolve(InventoryStore.COVER_FILE_NAME),
             contentDescription = null,
             modifier = Modifier
                 .size(56.dp)
@@ -783,6 +1002,19 @@ private fun CoverThumbnail(coverImage: ByteArray?) {
             )
         }
     }
+}
+
+/** Small warning marker on entries whose name carries a sync-conflict stamp. */
+@Composable
+private fun ConflictBadge(modifier: Modifier = Modifier) {
+    Icon(
+        imageVector = Icons.Filled.Warning,
+        contentDescription = stringResource(R.string.conflict_badge),
+        tint = MaterialTheme.colorScheme.error,
+        modifier = modifier
+            .padding(start = 6.dp)
+            .size(18.dp),
+    )
 }
 
 /** Small full-width label separating the containers and photos sections. */
@@ -871,16 +1103,17 @@ private fun AddOptionsSheet(
 }
 
 /**
- * Container picker shared by the container-move and photo-move sheets:
- * full paths, path-sorted; an explanatory message when nothing can be
- * listed (e.g. this is the only container).
+ * Container folder picker shared by the container-move and photo-move
+ * sheets: paths relative to the inventory root, path-sorted; an
+ * explanatory message when nothing can be listed (e.g. this is the only
+ * container).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ContainerPathPickerSheet(
-    paths: List<ContainerPath>,
+    paths: List<ContainerViewModel.FolderChoice>,
     onDismiss: () -> Unit,
-    onPathSelected: (ContainerPath) -> Unit,
+    onPathSelected: (ContainerViewModel.FolderChoice) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
 
@@ -915,15 +1148,15 @@ private fun ContainerPathPickerSheet(
             ) {
                 items(
                     items = paths,
-                    key = { path -> path.id },
-                ) { path ->
+                    key = { choice -> choice.path },
+                ) { choice ->
                     ListItem(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { onPathSelected(path) },
+                            .clickable { onPathSelected(choice) },
                         headlineContent = {
                             Text(
-                                text = path.path,
+                                text = choice.label,
                                 style = MaterialTheme.typography.bodyLarge,
                             )
                         },
@@ -1014,11 +1247,11 @@ private fun SearchField(
     )
 }
 
-/** 1:1 grid tile: image, bottom scrim with the description, selection cues. */
+/** 1:1 grid tile: image from disk, scrim with the description, selection cues. */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun PhotoTile(
-    photo: PhotoEntity,
+    photo: CacheEntry,
     selectionMode: Boolean,
     selected: Boolean,
     onClick: () -> Unit,
@@ -1040,8 +1273,8 @@ private fun PhotoTile(
             ),
     ) {
         AsyncImage(
-            model = photo.image,
-            contentDescription = photo.description,
+            model = File(photo.path),
+            contentDescription = photo.description ?: photo.name,
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .matchParentSize()
@@ -1059,7 +1292,7 @@ private fun PhotoTile(
                 ),
         )
         Text(
-            text = photo.description,
+            text = photo.description ?: photo.name,
             style = MaterialTheme.typography.bodySmall,
             color = Color.White,
             maxLines = 2,
@@ -1069,6 +1302,13 @@ private fun PhotoTile(
                 .fillMaxWidth()
                 .padding(8.dp),
         )
+        if (photo.isConflict) {
+            ConflictBadge(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(6.dp),
+            )
+        }
         if (selectionMode) {
             Icon(
                 imageVector = if (selected) {
@@ -1147,7 +1387,7 @@ private fun CoverSourceSheet(
 /** Lightweight preview confirm for a gallery-picked cover (no metadata). */
 @Composable
 private fun CoverConfirmDialog(
-    imageBytes: ByteArray,
+    imageFile: File,
     onSave: () -> Unit,
     onDiscard: () -> Unit,
 ) {
@@ -1156,7 +1396,7 @@ private fun CoverConfirmDialog(
         title = { Text(stringResource(R.string.set_photo)) },
         text = {
             AsyncImage(
-                model = imageBytes,
+                model = imageFile,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -1224,7 +1464,7 @@ private fun ContainerNameDialog(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PendingPhotoSaveSheet(
-    imageBytes: ByteArray,
+    imageFile: File,
     remainingCount: Int,
     onSave: (String, String?) -> Unit,
     onCancel: () -> Unit,
@@ -1250,7 +1490,7 @@ private fun PendingPhotoSaveSheet(
                 )
             }
             AsyncImage(
-                model = imageBytes,
+                model = imageFile,
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
@@ -1296,17 +1536,18 @@ private fun PendingPhotoSaveSheet(
 
 /**
  * Full-screen preview: edge-to-edge [Dialog] so this composable — and the
- * screen's ViewModel — stay alive while it is open. Metadata is editable in
- * place; Save updates, Delete asks for confirmation first.
+ * screen's ViewModel — stay alive while it is open. The file loads
+ * lazily by its very nature; metadata is editable in place; Save updates
+ * EXIF (and renames the file), Delete asks for confirmation first.
  */
 @Composable
 private fun FullScreenPhotoDialog(
-    photo: PhotoEntity,
+    photo: CacheEntry,
     onClose: () -> Unit,
     onSave: (String, String?) -> Unit,
     onDelete: () -> Unit,
 ) {
-    var description by remember { mutableStateOf(photo.description) }
+    var description by remember { mutableStateOf(photo.description ?: photo.name) }
     var note by remember { mutableStateOf(photo.note.orEmpty()) }
 
     Dialog(
@@ -1342,8 +1583,8 @@ private fun FullScreenPhotoDialog(
                     }
                 }
                 AsyncImage(
-                    model = photo.image,
-                    contentDescription = photo.description,
+                    model = File(photo.path),
+                    contentDescription = photo.description ?: photo.name,
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
                         .fillMaxWidth()
