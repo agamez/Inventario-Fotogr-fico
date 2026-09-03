@@ -218,7 +218,7 @@ class SafBackend @Inject constructor(
         uriFor(relPath) != null
     }
 
-    override suspend fun readPhotoMeta(relPath: String): PhotoMetadata.PhotoMeta? =
+    override suspend fun readPhotoMeta(relPath: String): PhotoMeta? =
         withContext(Dispatchers.IO) {
             val uri = uriFor(relPath) ?: return@withContext null
             runCatching {

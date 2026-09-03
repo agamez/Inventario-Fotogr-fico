@@ -5,10 +5,11 @@ package com.inventory.storage
  * containers, JPEGs are photos carrying their EXIF triple, `_cover.jpg`
  * is a folder's cover) reached through two different doors.
  *
- * - [FileBackend] talks to `/sdcard/PhotoInventory` directly with the
- *   `File` API and needs All Files Access.
- * - [SafBackend] talks to a user-picked tree through the Storage Access
- *   Framework and needs no runtime permission at all.
+ * - [FileBackend] talks to a plain inventory folder directly with the
+ *   `File` API (on Android it needs All Files Access).
+ * - The app's `SafBackend` (Android module) talks to a user-picked tree
+ *   through the Storage Access Framework and needs no runtime permission
+ *   at all.
  *
  * Every path here is RELATIVE to the storage root (root = `""`,
  * `"Building"`, `"Building/Storage unit"`), so cache rows, navigation
@@ -38,7 +39,7 @@ interface StorageBackend {
      * A photo's EXIF triple through a cheap stream read (pixel data is
      * never decoded); null when the entry is gone or unreadable.
      */
-    suspend fun readPhotoMeta(relPath: String): PhotoMetadata.PhotoMeta?
+    suspend fun readPhotoMeta(relPath: String): PhotoMeta?
 
     /** Full bytes of an entry (search thumbnails, EXIF rewrites); null when gone. */
     suspend fun readPhotoBytes(relPath: String): ByteArray?
@@ -118,14 +119,14 @@ const val COVER_FILE_NAME = "_cover.jpg"
 private val CONFLICT_REGEX = Regex("""\.sync-conflict-\d{8}-\d{6}-\w+""")
 
 /** True when a file/folder name carries a Syncthing-style conflict marker. */
-internal fun isConflictName(name: String): Boolean = CONFLICT_REGEX.containsMatchIn(name)
+fun isConflictName(name: String): Boolean = CONFLICT_REGEX.containsMatchIn(name)
 
 /** Appends a single [name] segment to a relative parent path ("" = root). */
-internal fun joinRel(parent: String, name: String): String =
+fun joinRel(parent: String, name: String): String =
     if (parent.isEmpty()) name else "$parent/$name"
 
 /** The relative parent of [rel] ("" for direct children of the root). */
-internal fun parentOf(rel: String): String = rel.substringBeforeLast('/', "")
+fun parentOf(rel: String): String = rel.substringBeforeLast('/', "")
 
 /** The last (name) segment of a relative path. */
-internal fun nameOf(rel: String): String = rel.substringAfterLast('/')
+fun nameOf(rel: String): String = rel.substringAfterLast('/')

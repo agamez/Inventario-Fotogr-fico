@@ -1,39 +1,34 @@
 package com.inventory.storage
 
-import android.content.Context
-import android.os.Environment
-import com.inventory.storage.PhotoMetadata.looksLikeJpeg
-import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.IOException
 import java.util.Locale
 import java.util.UUID
-import javax.inject.Inject
-import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * The direct-`File` backend: the inventory root is the plain folder
- * `/sdcard/PhotoInventory` and every entry is addressed as
- * `File(root, relPath)`. Requires All Files Access (see [StorageAccess]) —
- * it is the advanced mode behind the [SafBackend] default.
+ * The direct-`File` backend: the inventory root is a plain folder on
+ * disk and every entry is addressed as `File(root, relPath)`. The app
+ * wires it to `/sdcard/PhotoInventory` (All Files Access — the advanced
+ * mode behind the SAF default); the constructor takes the root, a
+ * "may I touch this folder?" check and the EXIF seam as plain values,
+ * keeping this class platform-neutral.
  *
  * Behaviour mirrors what the app did before dual-mode storage existed:
  * hidden (dot-prefixed) entries are never listed, collisions resolve to
  * Filenames' " (2)" variants, and every write lands through a temp file
  * inside the destination folder that is renamed into place.
  */
-@Singleton
-class FileBackend @Inject constructor(
-    @ApplicationContext private val context: Context,
+class FileBackend(
+    /** The inventory root folder; created lazily by [ensureRoot]. */
+    val root: File,
+    /** Whether this backend may currently read and write [root]. */
+    private val accessCheck: () -> Boolean,
+    private val exif: ExifEditor,
 ) : StorageBackend {
 
-    /** The inventory root folder; created lazily by [ensureRoot]. */
-    val root: File = File(Environment.getExternalStorageDirectory(), ROOT_FOLDER_NAME)
-
-    /** Whether this backend may currently read and write [root]. */
-    fun hasAccess(): Boolean = StorageAccess.hasStorageAccess(context)
+    fun hasAccess(): Boolean = accessCheck()
 
     /** Creates [root] if needed; false when storage is inaccessible or mkdirs failed. */
     suspend fun ensureRoot(): Boolean = withContext(Dispatchers.IO) {
@@ -79,10 +74,10 @@ class FileBackend @Inject constructor(
         fileOf(relPath).exists()
     }
 
-    override suspend fun readPhotoMeta(relPath: String): PhotoMetadata.PhotoMeta? =
+    override suspend fun readPhotoMeta(relPath: String): PhotoMeta? =
         withContext(Dispatchers.IO) {
             val file = fileOf(relPath)
-            if (file.isFile) PhotoMetadata.read(file) else null
+            if (file.isFile) exif.read(file) else null
         }
 
     override suspend fun readPhotoBytes(relPath: String): ByteArray? = withContext(Dispatchers.IO) {
@@ -160,7 +155,7 @@ class FileBackend @Inject constructor(
 
     override suspend fun setCover(folderRel: String, bytes: ByteArray): Unit =
         withContext(Dispatchers.IO) {
-            require(bytes.isNotEmpty() && looksLikeJpeg(bytes)) { "Cover image is empty or not a JPEG." }
+            require(bytes.isNotEmpty() && exif.looksLikeJpeg(bytes)) { "Cover image is empty or not a JPEG." }
             writePhotoBytes(joinRel(folderRel, COVER_FILE_NAME), bytes)
         }
 

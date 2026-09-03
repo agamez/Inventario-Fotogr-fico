@@ -9,6 +9,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
+import javax.inject.Inject
 
 /**
  * The metadata contract of the filesystem model: everything the app knows
@@ -38,15 +39,11 @@ import java.util.UUID
  * Clearing a value: [ExifInterface.setAttribute] with `null` removes the
  * tag; an externally-set empty string reads back as null here so blank
  * metadata never leaks into the cache or the UI.
+ *
+ * This is the Android engine behind the shared [ExifEditor] seam;
+ * [AndroidExifEditor] exposes it to `:shared`'s [FileBackend].
  */
 object PhotoMetadata {
-
-    /** The EXIF triple this app reads from and writes to a photo file. */
-    data class PhotoMeta(
-        val description: String?,
-        val note: String?,
-        val dateTaken: Long?,
-    )
 
     private const val EXIF_DATE_PATTERN = "yyyy:MM:dd HH:mm:ss"
 
@@ -171,4 +168,28 @@ object PhotoMetadata {
             SimpleDateFormat(EXIF_DATE_PATTERN, Locale.US).parse(text)?.time
         }.getOrNull()
     }
+}
+
+/**
+ * The app's [ExifEditor] implementation: hands the platform-neutral
+ * storage core in `:shared` its EXIF reads, stamps and JPEG checks
+ * through the androidx [ExifInterface] engine above. Constructor-injected
+ * by Hilt (see `di.StorageModule`) into the shared [FileBackend].
+ */
+class AndroidExifEditor @Inject constructor() : ExifEditor {
+
+    override fun read(bytes: ByteArray): PhotoMeta = PhotoMetadata.read(bytes)
+
+    override fun read(stream: InputStream): PhotoMeta = PhotoMetadata.read(stream)
+
+    override fun read(file: File): PhotoMeta = PhotoMetadata.read(file)
+
+    override fun withExif(
+        bytes: ByteArray,
+        description: String?,
+        note: String?,
+        setDateTakenIfMissing: Long?,
+    ): ByteArray = PhotoMetadata.withExif(bytes, description, note, setDateTakenIfMissing)
+
+    override fun looksLikeJpeg(bytes: ByteArray): Boolean = PhotoMetadata.looksLikeJpeg(bytes)
 }
