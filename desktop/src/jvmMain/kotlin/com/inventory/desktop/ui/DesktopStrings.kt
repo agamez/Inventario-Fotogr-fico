@@ -1,0 +1,120 @@
+package com.inventory.desktop.ui
+
+/**
+ * Every user-visible string of the desktop app, in one auditable place.
+ * The wording follows the Android app's `strings.xml` where the screens
+ * are the same (container/photo/browse vocabulary); the desktop-only
+ * chrome (window, pickers, storage line) is defined here.
+ */
+object DesktopStrings {
+
+    // Window & top bar
+    const val WINDOW_TITLE = "Photo Inventory"
+    const val TITLE_INVENTORY = "Inventory"
+    const val UP = "Up one level"
+    const val RESCAN = "Rescan"
+    const val SEARCH = "Search"
+    const val SEARCH_HINT = "Search all photos"
+    const val CLOSE_SEARCH = "Close search"
+    const val IMPORT_PHOTOS = "Import photos"
+    const val ADD_CONTAINER = "Add container"
+
+    // Sections & rows
+    const val CONTAINERS_SECTION = "Containers"
+    const val PHOTOS_SECTION = "Photos"
+    const val ROOT_FOLDER_LABEL = "Inventory (root)"
+    const val CONFLICT_BADGE = "Sync conflict"
+    const val CONTAINER_OPTIONS = "Container options"
+    const val SCANNING_LABEL = "Scanning…"
+
+    // Empty states
+    const val INVENTORY_EMPTY = "Your inventory is empty.\nClick \"Add container\" to create your first container."
+    const val EMPTY_FOLDER = "Nothing here yet.\nAdd a container or import photos."
+    const val NO_RESULTS = "No photos match this search."
+
+    // Search scope chips
+    const val SEARCH_SCOPE_HERE = "This container"
+    const val SEARCH_SCOPE_SUBTREE = "Include sub-containers"
+
+    // Dialog buttons & generic actions
+    const val SAVE = "Save"
+    const val CANCEL = "Cancel"
+    const val DELETE = "Delete"
+    const val CLOSE = "Close"
+    const val RENAME = "Rename"
+    const val MOVE = "Move"
+    const val MOVE_TO = "Move to…"
+    const val SET_COVER = "Set cover from photo…"
+    const val REMOVE_COVER = "Remove cover"
+    const val NEXT = "Next"
+
+    // Container dialogs
+    const val NEW_CONTAINER_TITLE = "New container"
+    const val RENAME_CONTAINER_TITLE = "Rename container"
+    const val NAME_LABEL = "Name"
+    const val MOVE_CONTAINER_TITLE = "Move container to…"
+    const val MOVE_CONTAINER_TO = "Move to…"
+    const val PHOTO_MOVE_TITLE = "Move photo to…"
+
+    // Photo dialog
+    const val PHOTO_DETAILS_TITLE = "Photo"
+    const val DESCRIPTION_LABEL = "Description"
+    const val NOTE_LABEL = "Note"
+    const val DATE_TAKEN_LABEL = "Date taken"
+    const val NO_DATE = "no date"
+    const val PHOTO_PATH_LINE = "In: %s"
+
+    // Folder picker dialog
+    const val NO_FOLDER_TARGETS = "No other folders yet."
+
+    // Import queue
+    const val IMPORT_TITLE = "Import photo"
+    const val N_MORE_WAITING = "%d more waiting"
+    const val DESCRIPTION_REQUIRED = "Description is required"
+
+    // Delete confirmations
+    const val DELETE_CONTAINER_TITLE = "Delete container?"
+    const val DELETE_CONTAINER_MESSAGE =
+        "\"%s\" and its contents will be deleted from disk. This cannot be undone."
+    const val DELETE_CONTAINS = "It holds %s and %s."
+    const val CONTAINERS_COUNTED = "%d containers"
+    const val CONTAINER_COUNTED_ONE = "%d container"
+    const val PHOTOS_COUNTED = "%d photos"
+    const val PHOTO_COUNTED_ONE = "%d photo"
+    const val COUNT_SEPARATOR = " · "
+    const val DELETE_PHOTO_TITLE = "Delete photo?"
+    const val DELETE_PHOTO_MESSAGE = "\"%s\" will be deleted from disk. This cannot be undone."
+
+    // Conflict banner
+    const val CONFLICT_BANNER_ONE = "1 sync-conflicted file — resolve it with a file manager, then rescan."
+    const val CONFLICT_BANNER_MANY = "%d sync-conflicted files — resolve them with a file manager, then rescan."
+
+    // Storage line
+    const val STORAGE_LABEL = "Storage folder:"
+
+    // Folder gate (no config yet / config folder missing)
+    const val PICK_FOLDER_TITLE = "Choose your inventory folder"
+    const val PICK_FOLDER_MESSAGE =
+        "Point the app at the folder that holds your photo inventory — the same one the Android app uses."
+    const val PICK_FOLDER_BUTTON = "Choose folder…"
+    const val FOLDER_PICKER_TITLE = "Pick the inventory folder"
+    const val IMAGE_PICKER_TITLE = "Choose photos to import"
+
+    // Messages (snackbar line under the top bar)
+    const val MSG_CONTAINER_CREATED = "Container created"
+    const val MSG_CONTAINER_SAVED = "Container saved"
+    const val MSG_CONTAINER_MOVED = "Container moved"
+    const val MSG_CONTAINER_DELETED = "Container deleted"
+    const val MSG_PHOTO_SAVED = "Photo saved"
+    const val MSG_PHOTO_DELETED = "Photo deleted"
+    const val MSG_PHOTOS_MOVED = "Photos moved"
+    const val MSG_PHOTO_ADDED = "Photo added"
+    const val MSG_RESCANNED = "Storage rescanned"
+    const val MSG_COVER_UPDATED = "Cover updated"
+    const val MSG_ERROR_BLANK_NAME = "The name cannot be empty"
+    const val MSG_ERROR_BLANK_DESCRIPTION = "The description cannot be empty"
+    const val MSG_ERROR_INVALID_IMAGE = "That file is not a valid image"
+    const val MSG_ERROR_OPERATION = "The operation failed — check the folder and retry"
+    const val MSG_ERROR_INVALID_MOVE = "A folder cannot be moved into itself"
+    const val MSG_IMPORT_DONE = "Import finished"
+}
