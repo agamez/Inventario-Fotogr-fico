@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Photo Inventory end-to-end smoke test (filesystem-as-truth model).
+"""Photo Inventory end-to-end smoke test (dual-mode storage, filesystem-as-truth).
 
 The app's storage refactor makes `/sdcard/PhotoInventory` the single source
 of truth: containers are real nested folders, photos are JPEGs whose
@@ -10,21 +10,36 @@ database assertion is therefore replaced by a DISK assertion: folder
 existence, nesting, file names, EXIF values, cover presence — read back
 through adb + Pillow.
 
-Scenarios: storage-permission gate (via appops), root CRUD + disk,
-drill nesting, camera/gallery photo flow + EXIF + byte-identity,
-in-container search with here/subtree scopes, global search, preview
-edit (rename-on-disk) + multi-select move, cycle-proof container moves,
-covers (gallery + camera, removal, grid exclusion), sync-conflict
-banner/badge/multi-select delete, PC-side edits adopted by Rescan, and a
-cache-wipe rebuild proof. Ends with an exact-tree disk audit.
+The backend is DUAL-MODE, chosen on a first-launch MODE CHOOSER
+(rationale + "Pick a folder (no permissions)" + "All files access
+(advanced)"): SAF (Storage Access Framework — zero permissions, the
+DEFAULT) or File mode (All-Files-Access). Both backends operate on the
+SAME disk tree, so every disk assertion is mode-agnostic. Run order:
+  0  t_saf_mode        — FIRST, on a fresh pm clear with NO appops at all:
+     chooser → DocumentsUI folder grant → proof (dumpsys shows no storage
+     grant) → container + camera photo + EXIF + gallery cover + rename,
+     all through the SAF backend.
+  1  t_file_mode_switch — root overflow "Storage mode" dialog → switch to
+     FILE → gate (appops still denied) → grant via appops → resume → the
+     SAF-created tree is visible through FileBackend (interop).
+  2  main suite        — runs in FILE mode: pm clear (wipes the mode pref,
+     so the CHOOSER returns), appops re-grant, tap "All files access" in
+     the chooser, then the full scenario battery: permission gate, root
+     CRUD, drill nesting, camera/gallery flow + EXIF + byte-identity,
+     search scopes, preview edit + multi-select move, cycle-proof moves,
+     covers, conflicts, PC edits adopted by Rescan (its cache-wipe step
+     re-answers the chooser too), and an exact-tree disk audit.
 
   python3 scripts/smoke_test.py    # always pins emulator-5554 when present
 
 Prereqs: emulator booted (headless ok); app installed. Wipes app data
-(pm clear), grants MANAGE_EXTERNAL_STORAGE via appops BEFORE launch,
-removes any stale /sdcard/PhotoInventory tree, seeds the gallery, then
-starts the app, so the run is deterministic. Exits non-zero on failure;
-soft warnings are allowed only for the documented queued-snackbar checks.
+(pm clear) AND explicitly denies MANAGE_EXTERNAL_STORAGE before the SAF
+scenario — measured on this image, pm clear does NOT reset that appops
+(contrary to the old harness assumption), so zero-permission proofs must
+set it. The suite grants it back via appops for the FILE-mode body,
+removes any stale /sdcard/PhotoInventory tree, seeds the gallery, so the
+run is deterministic. Exits non-zero on failure; soft warnings are
+allowed only for the documented queued-snackbar checks.
 """
 import base64, io, os, re, subprocess, sys, tempfile, time, warnings
 import xml.etree.ElementTree as ET
@@ -42,6 +57,13 @@ JPEG_1PX = base64.b64decode(
     "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAIBAQEBAQIBAQECAgICAgQDAgICAgUEBAMEBgUGBgYFBgYGBwkIBgcJBwYGCAsICQoKCgoKBggLDAsKDAkKCgr/2wBDAQICAgICAgUDAwUKBwYHCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgr/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFAEBAAAAAAAAAAAAAAAAAAAACf/EABQRAQAAAAAAAAAAAAAAAAAAAAD/2gAMAwEAAhEDEQA/AJGAVA1j/9k=")
 MID = "\u00b7"  # ContainerRow joins the plural counts with " · "
 DATE_RE = r"\d{4}:\d{2}:\d{2} \d{2}:\d{2}:\d{2}"  # EXIF "yyyy:MM:dd HH:mm:ss"
+# Exact UI texts of the dual-mode storage (strings.xml + measured dumps):
+CHOOSER_RATIONALE = "reads and writes a normal folder"  # storage_permission_rationale
+PICK_FOLDER_BTN = "Pick a folder (no permissions)"      # pick_folder (SAF, default)
+FILE_MODE_BTN = "All files access (advanced)"           # all_files_access
+GRANT_ACCESS_BTN = "Grant access"                       # gate button (FILE, blocked)
+MODE_CHANGED_SNACK = "Storage mode changed"             # storage_mode_changed (prefix)
+MODE_SAF_LABEL = "Folder pick"                          # mode_saf_label (dialog)
 
 passed = failed = 0
 failures = []
@@ -422,6 +444,119 @@ def no_filename_leaks(name):
            if n.get("text", "").lower().endswith(".jpg")] if d is not None else ["<no dump>"]
     check(name, not bad, str(bad))
 
+# ---- dual-mode storage helpers (chooser, mode dialog, SAF picker) ----------
+# Measured on this image: the "All files access" button (chooser AND mode
+# dialog) always hops to the All-Files-Access SETTINGS page, even with the
+# appops pre-granted; BACK returns to the app, where LifecycleResumeEffect
+# re-checks and the gate falls. DocumentsUI opens INSIDE PhotoInventory via
+# the store's EXTRA_INITIAL_URI hint; the grant sheet's buttons are
+# "USE THIS FOLDER" then "ALLOW" (uppercase here — matched case-strictly so
+# the dialog's "Allow Photo Inventory to access..." sentence is not it).
+
+def fs_wait_exists(path, timeout=6.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if fs_isdir(path): return True
+        time.sleep(0.5)
+    return fs_isdir(path)
+
+def settings_page_focused(timeout=10):
+    end = time.time() + timeout
+    while time.time() < end:
+        if "com.android.settings" in sh("dumpsys window | grep mCurrentFocus"):
+            return True
+        time.sleep(0.5)
+    return False
+
+def tap_texts_exact(needle, timeout=8):
+    """Tap the first node whose text EQUALS needle (find_all's match is a
+    case-insensitive substring — too loose for the parenthesised buttons)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        ns = texts_exact(needle)
+        if ns:
+            tap(ns[0]); return True
+        time.sleep(0.5)
+    return False
+
+def choose_file_mode(where="chooser"):
+    """Tap 'All files access (advanced)', ride the settings hop BACK.
+    Returns True when the app came back foregrounded."""
+    if not tap_texts_exact(FILE_MODE_BTN, timeout=8):
+        check(f"[{where}] 'All files access' button tappable", False)
+        return False
+    settings = settings_page_focused(timeout=10)
+    check(f"[{where}] tap opens the All-files-access settings page", settings)
+    if settings:
+        back(); time.sleep(2.0)
+    return in_foreground()
+
+def choose_saf_mode():
+    """Tap 'Pick a folder (no permissions)' and drive the DocumentsUI grant:
+    USE THIS FOLDER → ALLOW. Returns True when the app came back on an
+    empty (freshly wiped) inventory."""
+    if not tap_texts_exact(PICK_FOLDER_BTN, timeout=8):
+        check("[saf] 'Pick a folder' button tappable", False)
+        return False
+    end = time.time() + 15  # the brief: allow 15s for DocumentsUI
+    promo = 0
+    use = None
+    while time.time() < end:
+        d = dump()
+        if not find_all(d, text="this folder") and find_all(d, text="Learn more"):
+            # first-run DocumentsUI promo sheet (never seen here — guard):
+            # press BACK once, log it, and keep waiting for the picker.
+            print("  note: DocumentsUI 'Learn more' promo — pressed BACK")
+            back(); promo += 1; time.sleep(1.5)
+            continue
+        ns = find_all(d, text="this folder")  # case-insensitive substring
+        if ns:
+            use = ns[0]; break
+        time.sleep(0.6)
+    # the same dump that produced USE THIS FOLDER: 'PhotoInventory' nodes
+    # prove the picker opened INSIDE the folder (EXTRA_INITIAL_URI worked)
+    # — the chooser's own rationale mentions '(PhotoInventory)' too, so
+    # only a gone-chooser tree counts.
+    check("[saf] folder picker opened INSIDE PhotoInventory",
+          use is not None and d is not None and not find_all(d, text=CHOOSER_RATIONALE)
+          and bool(find_all(d, text="PhotoInventory")),
+          f"promo_retries={promo} use={use is not None}")
+    if use is None:
+        check("[saf] 'USE THIS FOLDER' button reached", False)
+        return False
+    check(f"[saf] 'USE THIS FOLDER' button reached ({use.get('text')!r})", True)
+    tap(use); time.sleep(1.5)
+    allow = None
+    end = time.time() + 15
+    while time.time() < end:
+        d = dump()
+        cands = [n for n in d.iter() if n.get("text") in ("ALLOW", "Allow")] \
+            if d is not None else []
+        if cands:
+            allow = cands[0]; break
+        time.sleep(0.6)
+    if allow is None:
+        check("[saf] grant-confirm 'Allow' button reached", False)
+        return False
+    check(f"[saf] grant-confirm button reached ({allow.get('text')!r})", True)
+    tap(allow)
+    ok = wait_for(text="Your inventory is empty", timeout=15) is not None
+    check("[saf] grant lands on an empty SAF-backed inventory", ok)
+    return ok
+
+def saf_permission_proof():
+    """Zero-permission evidence for SAF mode: no storage RUNTIME grant in
+    `dumpsys package` (the brief's 'RUNTIME|appops' grep is case-sensitive
+    and matches nothing on this Android — parse the real lowercase
+    'runtime permissions:' section instead), and the MANAGE_EXTERNAL_STORAGE
+    appops is not allow. Returns (bad_grants, appops_mode, raw)."""
+    out = sh("dumpsys package com.inventory")
+    bad = re.findall(r"(?:READ|WRITE|MANAGE)_EXTERNAL_STORAGE[^\n]*granted=true", out)
+    raw = sh(f"appops get {PKG} MANAGE_EXTERNAL_STORAGE")
+    m = re.search(r"MANAGE_EXTERNAL_STORAGE:\s*(\w+)", raw)
+    mode = m.group(1) if m else "default"  # 'No operations.' = unset = default
+    return bad, mode, raw
+
 # ---- move-picker (ModalBottomSheet) helpers --------------------------------
 # The sheet title is "Move to…"; rows live below it. Nodes of the underlying
 # screen may share the sheet's y-band, so every picker assertion is done on
@@ -488,10 +623,13 @@ def sheet_absent(needle, exact=True):
 # ---------------------------------------------------------------- app setup
 
 def grant_storage_appops():
-    """The new model needs All Files Access BEFORE the first frame — the app
-    is unusable behind the gate otherwise. (Replaces the old camera-appops-
-    only step; camera appops is still fine to pre-allow.) pm clear resets
-    both, so this always runs right after it."""
+    """The FILE backend needs All Files Access BEFORE its gate can fall —
+    the app is unusable behind it otherwise. (Replaces the old camera-appops-
+    only step; camera appops is still fine to pre-allow.) Measured on this
+    image: pm clear resets CAMERA (it syncs to the revoked runtime grant)
+    but does NOT reset a manually-set MANAGE_EXTERNAL_STORAGE appops — so
+    t_saf_mode explicitly DENIES it first, and every FILE-mode entry
+    explicitly allows it. SAF mode needs NONE of this — that is its proof."""
     sh(f"appops set {PKG} MANAGE_EXTERNAL_STORAGE allow")
     sh(f"appops set {PKG} CAMERA allow")
 
@@ -598,6 +736,162 @@ def cover_gallery_flow():
     return True
 
 # ---------------------------------------------------------------- scenarios
+
+def t_saf_mode():
+    """FIRST, on a fresh pm clear with NO appops set at all: answer the
+    chooser with 'Pick a folder', drive DocumentsUI, prove zero storage
+    permissions, then run the full CRUD battery through the SAF backend."""
+    mark("00 SAF mode (zero perms)")
+    check("app in foreground on first launch", in_foreground())
+    check("first launch shows the mode chooser",
+          wait_for(text=CHOOSER_RATIONALE, timeout=12) is not None)
+    check("chooser offers the SAF default button", bool(texts_exact(PICK_FOLDER_BTN)))
+    check("chooser offers the File-mode button", bool(texts_exact(FILE_MODE_BTN)))
+    a = _bounds(texts_exact(PICK_FOLDER_BTN)[0].get("bounds", "")) \
+        if texts_exact(PICK_FOLDER_BTN) else None
+    b = _bounds(texts_exact(FILE_MODE_BTN)[0].get("bounds", "")) \
+        if texts_exact(FILE_MODE_BTN) else None
+    check("SAF button sits above the File button (recommended default)",
+          bool(a and b) and a[1] < b[1], f"{a} vs {b}")
+    if not choose_saf_mode():
+        return
+    bad, mode, raw = saf_permission_proof()
+    check("dumpsys: no storage RUNTIME grant while SAF works", not bad, str(bad))
+    check("MANAGE_EXTERNAL_STORAGE appops not granted",
+          mode in ("deny", "ignore", "default"), raw)
+    # container CRUD through SAF
+    check("root FAB opens create dialog", tap_desc("Add container"))
+    time.sleep(1.2)
+    fill_dialog("SAF root")
+    check("SAF container created snackbar", snackbar_visible("Container created", timeout=8))
+    check("row 'SAF root' visible", wait_for(text="SAF root", timeout=8) is not None)
+    check("disk: /SAF root folder (created via SAF)", fs_isdir(fp("SAF root")))
+    # camera capture — the runtime CAMERA dialog must carry it unaided
+    # (no appops was set: camera_capture polls 'While using the app')
+    tap_text("SAF root"); time.sleep(1.8)
+    check("SAF camera capture saved", camera_capture("SAF shot", "via saf", where="SAF root"))
+    check("SAF photo snackbar", snackbar_visible("Photo added", timeout=10))
+    check("SAF tile 'SAF shot'", wait_for(text="SAF shot", timeout=8) is not None)
+    shot = fp("SAF root", "SAF shot.jpg")
+    check("disk: /SAF root/SAF shot.jpg (desc → filename)", fs_exists(shot))
+    tr = exif_triple(shot); EXIF_SAMPLES.append(("SAF root/SAF shot.jpg", tr))
+    check("EXIF: SAF ImageDescription == 'SAF shot'", tr["desc"] == "SAF shot", str(tr))
+    check("EXIF: SAF UserComment == 'via saf'", tr["note"] == "via saf", str(tr))
+    check("EXIF: SAF DateTimeOriginal stamped",
+          bool(re.fullmatch(DATE_RE, tr["date"] or "")), str(tr))
+    # child folder + gallery cover through SAF
+    tap_desc("Add"); time.sleep(1.2)
+    tap_text("Add container"); time.sleep(1.0)
+    fill_dialog("SAF sub")
+    check("SAF child row visible", wait_for(text="SAF sub", timeout=8) is not None)
+    check("disk: /SAF root/SAF sub folder", fs_isdir(fp("SAF root", "SAF sub")))
+    check("open SAF sub row menu", row_menu("SAF sub", "Options"))
+    time.sleep(1.2)
+    check("menu offers Set photo (SAF)", tap_text("Set photo", timeout=5))
+    check("cover sheet opens (SAF)", wait_for(text="Choose from gallery", timeout=5) is not None)
+    check("SAF gallery cover saved", cover_gallery_flow())
+    cov = fp("SAF root", "SAF sub", "_cover.jpg")
+    time.sleep(1.5)
+    check("disk: SAF sub/_cover.jpg exists", fs_exists(cov))
+    check("SAF cover snackbar", snackbar_visible("Photo updated", timeout=10),
+          "cover-gallery snackbar rides the same queue as the FILE-mode covers "
+          "(measured soft there), disk asserted hard above", soft=True)
+    # rename through SAF (renameDocument): cover travels with the folder
+    check("open SAF sub menu again", row_menu("SAF sub", "Options"))
+    time.sleep(1.2)
+    tap_text("Rename")
+    check("rename dialog prefilled (SAF)", wait_for(text="Rename", timeout=5) is not None)
+    fields = edit_texts()
+    check("rename field holds 'SAF sub'", fields and fields[0].get("text") == "SAF sub",
+          str([f.get("text") for f in fields]))
+    if not fields:
+        return
+    tap(fields[0]); wait_ime(); clear_field(); type_text("SAF box")
+    hide_ime(); time.sleep(1.0)
+    tap_text("Save")
+    check("SAF rename applied in UI", wait_for(text="SAF box", timeout=8) is not None)
+    check("disk: old 'SAF sub' gone", not fs_exists(fp("SAF root", "SAF sub")))
+    check("disk: renamed folder holds the cover", fs_exists(fp("SAF root", "SAF box", "_cover.jpg")))
+    check("disk: camera photo untouched by the rename", fs_exists(shot))
+    # Same measured queue flakiness as the FILE-mode rename snackbar
+    # (Container saved can surface ~6s after Save behind queued snackbars).
+    check("SAF rename snackbar (Container saved)", snackbar_visible("Container saved", timeout=12),
+          "queued-snackbar precedent from t_inventory_root", soft=True)
+    check("still inside SAF root after child rename", bool(texts_exact("SAF root")))
+
+def t_file_mode_switch():
+    """Switch SAF → FILE via the root overflow 'Storage mode' dialog while
+    All Files Access is still DENIED: the gate must catch the app, the
+    appops grant must release it on resume, and the SAF-created tree must
+    come back through the FileBackend (interop proof)."""
+    mark("01 file-mode switch")
+    check("starts on home in SAF mode", go_home())
+    check("root lists the SAF-created folder", bool(texts_exact("SAF root")))
+    check("root overflow opens", open_screen_menu())
+    time.sleep(1.2)
+    check("'Storage mode' menu entry opens the dialog", tap_text("Storage mode", timeout=5))
+    check("mode dialog title", bool(texts_exact("Storage mode")))
+    check("dialog labels the active mode 'Folder pick'", bool(texts_exact(MODE_SAF_LABEL)))
+    check("dialog offers both modes",
+          bool(texts_exact(PICK_FOLDER_BTN)) and bool(texts_exact(FILE_MODE_BTN)))
+    check("tap 'All files access' in the dialog", tap_texts_exact(FILE_MODE_BTN, timeout=5))
+    check("switch hops to the settings page", settings_page_focused())
+    back(); time.sleep(1.5)
+    check("FILE gate shows the rationale",
+          wait_for(text=CHOOSER_RATIONALE, timeout=8) is not None)
+    check("gate shows Grant access", bool(texts_exact(GRANT_ACCESS_BTN)))
+    check("gate offers the SAF escape hatch", bool(texts_exact(PICK_FOLDER_BTN)))
+    check("tree hidden behind the gate", not texts_exact("SAF root"))
+    # grant All Files Access the way the settings toggle would…
+    sh(f"appops set {PKG} MANAGE_EXTERNAL_STORAGE allow")
+    sh("input keyevent KEYCODE_HOME"); time.sleep(1.0)
+    start_app()
+    check("gate cleared after resume (re-check)",
+          wait_for(text="SAF root", timeout=12) is not None)
+    check("mode-switch snackbar (optional, queue-flaky across the hop)",
+          snackbar_visible(MODE_CHANGED_SNACK, timeout=8),
+          "emitted behind the settings hop; seen on resume in probing but "
+          "the snackbar queue has no delivery guarantee across process "
+          "pauses — dialog texts + gate + interop tree asserted hard above",
+          soft=True)
+    check("no Grant access after resume", not texts_exact(GRANT_ACCESS_BTN))
+    check("mode persisted as FILE", 'name="mode">FILE<' in
+          sh(f"run-as {PKG} cat shared_prefs/storage_prefs.xml 2>/dev/null"))
+    # the brief: after any mode switch, rescan (menu) before UI assertions
+    check("rescan via root icon", rescan_from_root())
+    check("rescanned snackbar (FILE over the SAF tree)",
+          snackbar_visible("Storage rescanned", timeout=10))
+    check("interop: SAF root counts 1 container · 1 photo",
+          wait_for(text=f"1 container {MID} 1 photo", timeout=8) is not None)
+    tap_text("SAF root"); time.sleep(1.8)
+    check("interop: EXIF photo renders in FILE mode",
+          wait_for(text="SAF shot", timeout=8) is not None)
+    check("interop: renamed child folder present", bool(texts_exact("SAF box")))
+    no_filename_leaks("no raw filenames on the interop screen")
+    check("back home after interop", go_home())
+
+def t_suite_start():
+    """Main-suite entry: the suite-start pm clear wiped the mode pref, so
+    the CHOOSER is up again — answer it with 'All files access' (FILE mode
+    is automatable and fast; the zero-permission SAF path got its dedicated
+    proof in scenario 00)."""
+    mark("02 suite start (chooser)")
+    check("app in foreground after suite-start launch", in_foreground())
+    check("chooser returns after pm clear (mode pref wiped)",
+          wait_for(text=CHOOSER_RATIONALE, timeout=12) is not None)
+    check("chooser still offers both buttons",
+          bool(texts_exact(PICK_FOLDER_BTN)) and bool(texts_exact(FILE_MODE_BTN)))
+    check("no browse behind the chooser",
+          not find_all(dump(), text="Your inventory is empty"))
+    choose_file_mode(where="suite start")
+    check("FILE mode home reached (gate auto-satisfied)",
+          wait_for(text="Your inventory is empty", timeout=10) is not None)
+    check("chooser buttons gone after the choice",
+          not texts_exact(PICK_FOLDER_BTN) and not texts_exact(FILE_MODE_BTN))
+    check("no gate button", not texts_exact(GRANT_ACCESS_BTN))
+    check("disk: root folder created by the app", fs_wait_exists(FS_ROOT))
+    time.sleep(1.0)
+    check("home title is Inventory", bool(texts_exact("Inventory")))
 
 def t_permission_gate():
     mark("1 permission gate")
@@ -1185,13 +1479,17 @@ def t_pc_edits():
     check("rescan #3 via root icon", rescan_from_root())
     check("UI adopted the folder rename", wait_for(text="Estate", timeout=10) is not None)
     check("UI dropped the old name", not texts_exact("Building"))
-    # (d) cache-rebuild proof: wipe app data (cache.db + grants) — disk must
-    # rebuild the whole UI. LAST, since pm clear resets state.
+    # (d) cache-rebuild proof: wipe app data (cache.db + mode pref) — disk
+    # must rebuild the whole UI. LAST, since pm clear resets state. The
+    # wipe also brings the MODE CHOOSER back: answer it with File mode.
     sh(f"pm clear {PKG}")
     grant_storage_appops()
     start_app(); time.sleep(3.0)
-    check("no gate after pm clear + appops re-grant",
-          not find_all(dump(), text="Grant access"))
+    check("cache-wipe relaunch re-answers the mode chooser",
+          wait_for(text=CHOOSER_RATIONALE, timeout=12) is not None)
+    choose_file_mode(where="rebuild")
+    check("no gate after pm clear + appops re-grant + chooser",
+          not texts_exact(GRANT_ACCESS_BTN))
     check("rebuilt root lists Estate", wait_for(text="Estate", timeout=15) is not None)
     check("rebuilt root lists Attic shelf", bool(find_all(dump(), text="Attic shelf")))
     tap_text("Estate"); time.sleep(1.8)
@@ -1270,11 +1568,30 @@ def main():
     sh("pm disable-user --user 0 com.google.android.calendar")
     sh("pkill -f uiautomator >/dev/null 2>&1")  # clear any wedged dump service
     sh(f"am force-stop {PKG}")
+    # --- scenario 0 FIRST, on a fresh data dir with NOTHING granted: pm
+    # clear does NOT reset a set MANAGE_EXTERNAL_STORAGE appops on this
+    # image (measured), so deny it explicitly; CAMERA stays at its default
+    # (ignore) to prove the SAF flow needs no pre-granted appops at all —
+    # the runtime dialog is handled inside camera_capture().
+    sh(f"pm clear {PKG}"); time.sleep(1)
+    sh(f"appops set {PKG} MANAGE_EXTERNAL_STORAGE deny")
+    sh(f"rm -rf {sq(FS_ROOT)}")
+    sh(f"mkdir -p {sq(FS_ROOT)}")   # EXTRA_INITIAL_URI target for the picker
+    setup_gallery_images()
+    start_app()
+    t_saf_mode()
+    t_file_mode_switch()
+    # --- main suite, FILE mode. pm clear wipes the mode pref (chooser
+    # returns), appops are (re-)granted explicitly, the tree starts empty
+    # again, and the gallery seeds are re-registered so they are the
+    # NEWEST items for the picker-ordering/byte-identity checks.
+    sh(f"am force-stop {PKG}")
     sh(f"pm clear {PKG}"); time.sleep(1)
     grant_storage_appops()          # BEFORE the first launch, after pm clear
     sh(f"rm -rf {sq(FS_ROOT)}")     # disk is the source of truth: start empty
     setup_gallery_images()
     start_app()
+    t_suite_start()
     t_permission_gate()
     t_inventory_root()
     t_drill_nesting()
