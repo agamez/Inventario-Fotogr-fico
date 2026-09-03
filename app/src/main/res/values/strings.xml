@@ -101,4 +101,12 @@
         <item quantity="one">%1$d sync-conflicted file — resolve it with a file manager, then rescan.</item>
         <item quantity="other">%1$d sync-conflicted files — resolve them with a file manager, then rescan.</item>
     </plurals>
+
+    <!-- Dual-mode storage: chooser + storage-mode dialog -->
+    <string name="storage_mode">Storage mode</string>
+    <string name="pick_folder">Pick a folder (no permissions)</string>
+    <string name="all_files_access">All files access (advanced)</string>
+    <string name="storage_mode_changed">Storage mode changed — index rebuilt</string>
+    <string name="mode_saf_label">Folder pick</string>
+    <string name="mode_file_label">All files access</string>
 </resources>

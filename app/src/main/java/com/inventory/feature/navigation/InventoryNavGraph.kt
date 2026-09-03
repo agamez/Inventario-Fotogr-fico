@@ -16,9 +16,11 @@ import com.inventory.feature.search.SearchScreen
 /**
  * Root navigation graph of the filesystem inventory: the browse screen is
  * reused for the storage root ("inventory") and for any container folder
- * ("container/{path}", URL-encoded absolute path, any depth), with the
+ * ("container/{path}", URL-encoded RELATIVE path, any depth), with the
  * camera and cover-capture screens saving into the addressed folder and
- * the global Search reached from the app bar.
+ * the global Search reached from the app bar. A search hit living
+ * directly in the root jumps to "inventory" (its relative path is empty,
+ * so no container route exists for it).
  */
 @Composable
 fun InventoryNavGraph(
@@ -32,14 +34,14 @@ fun InventoryNavGraph(
     ) {
         composable(route = Screens.Inventory.route) {
             ContainerScreen(
-                onOpenContainer = { path ->
-                    navController.navigate(Screens.buildContainerRoute(path))
+                onOpenContainer = { relPath ->
+                    navController.navigate(Screens.buildContainerRoute(relPath))
                 },
-                onOpenCamera = { path ->
-                    navController.navigate(Screens.buildCameraRoute(path))
+                onOpenCamera = { relPath ->
+                    navController.navigate(Screens.buildCameraRoute(relPath))
                 },
-                onOpenCoverCapture = { path ->
-                    navController.navigate(Screens.buildCoverRoute(path))
+                onOpenCoverCapture = { relPath ->
+                    navController.navigate(Screens.buildCoverRoute(relPath))
                 },
                 onOpenSearch = {
                     navController.navigate(Screens.Search.route)
@@ -51,8 +53,12 @@ fun InventoryNavGraph(
         composable(route = Screens.Search.route) {
             SearchScreen(
                 onBack = { navController.popBackStack() },
-                onOpenPhoto = { containerPath ->
-                    navController.navigate(Screens.buildContainerRoute(containerPath))
+                onOpenPhoto = { containerRel ->
+                    if (containerRel.isEmpty()) {
+                        navController.navigate(Screens.Inventory.route)
+                    } else {
+                        navController.navigate(Screens.buildContainerRoute(containerRel))
+                    }
                 },
             )
         }
@@ -64,12 +70,12 @@ fun InventoryNavGraph(
             ),
         ) {
             ContainerScreen(
-                onOpenContainer = { path ->
-                    navController.navigate(Screens.buildContainerRoute(path))
+                onOpenContainer = { relPath ->
+                    navController.navigate(Screens.buildContainerRoute(relPath))
                 },
-                onOpenCamera = { navController.navigate(Screens.buildCameraRoute(it)) },
-                onOpenCoverCapture = { path ->
-                    navController.navigate(Screens.buildCoverRoute(path))
+                onOpenCamera = { relPath -> navController.navigate(Screens.buildCameraRoute(relPath)) },
+                onOpenCoverCapture = { relPath ->
+                    navController.navigate(Screens.buildCoverRoute(relPath))
                 },
                 onOpenSearch = {
                     navController.navigate(Screens.Search.route)

@@ -71,16 +71,23 @@ object Filenames {
      * of a file that is about to be renamed, so it never collides with
      * itself.
      */
-    fun uniqueName(folder: File, base: String, ext: String, ignoring: String? = null): String {
+    fun uniqueName(folder: File, base: String, ext: String, ignoring: String? = null): String =
+        uniqueNameIn(folder.list()?.toSet() ?: emptySet(), base, ext, ignoring)
+
+    /**
+     * [uniqueName] over an in-memory set of taken names — what the SAF
+     * backend (and the store facade) use, since listing there costs a
+     * query while the name set is already at hand.
+     */
+    fun uniqueNameIn(taken: Set<String>, base: String, ext: String, ignoring: String? = null): String {
         val suffix = if (ext.isEmpty()) "" else ".$ext"
-        val taken = folder.list()
-            ?.filterNot { it.equals(ignoring, ignoreCase = true) }
-            ?.map { it.lowercase(Locale.getDefault()) }
-            ?.toSet()
-            ?: emptySet()
+        val takenLower = taken
+            .filterNot { it.equals(ignoring, ignoreCase = true) }
+            .map { it.lowercase(Locale.getDefault()) }
+            .toSet()
         var candidate = base
         var counter = 2
-        while (candidate.lowercase(Locale.getDefault()) + suffix.lowercase(Locale.getDefault()) in taken) {
+        while ((candidate + suffix).lowercase(Locale.getDefault()) in takenLower) {
             candidate = "$base ($counter)"
             counter++
         }

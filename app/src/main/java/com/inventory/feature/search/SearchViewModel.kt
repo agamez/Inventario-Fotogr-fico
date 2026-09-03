@@ -26,7 +26,8 @@ import kotlinx.coroutines.flow.stateIn
  *
  * The screen is read-only — no mutations, hence no one-shot event channel
  * as the CRUD features have — so everything it needs lives in [uiState].
- * Thumbnails load the file at [CacheEntry.path] directly.
+ * Rows are keyed on relative paths; thumbnails resolve through the active
+ * storage backend via [photoModel].
  */
 @HiltViewModel
 class SearchViewModel @Inject constructor(
@@ -37,7 +38,8 @@ class SearchViewModel @Inject constructor(
     /** One hit plus its folder rendered relative to the inventory root. */
     data class SearchHit(
         val entry: CacheEntry,
-        val location: String,
+        /** "Building / Shelf A", or null when the photo sits in the root. */
+        val location: String?,
     )
 
     data class SearchUiState(
@@ -71,18 +73,13 @@ class SearchViewModel @Inject constructor(
         _query.value = query
     }
 
-    /** Route target for a hit: the container folder it lives in (root when at top level). */
-    fun containerOf(hit: SearchHit): String = hit.entry.parentPath ?: store.rootPath
+    /** Route target for a hit: the container folder it lives in ("" = the root). */
+    fun containerOf(hit: SearchHit): String = hit.entry.parentRel ?: ""
 
-    /** "Building / Shelf A" for a photo folder, or the root folder's name. */
-    private fun locationFor(entry: CacheEntry): String {
-        val parentPath = entry.parentPath ?: return store.root.name
-        return parentPath
-            .removePrefix(store.rootPath)
-            .trim('/')
-            .split('/')
-            .filter(String::isNotBlank)
-            .joinToString(" / ")
-            .ifEmpty { store.root.name }
-    }
+    /** Resolves a photo file as a Coil model for the active backend. */
+    suspend fun photoModel(relPath: String): Any? = store.photoModel(relPath)
+
+    /** "Building / Shelf A" for a photo folder, null for one sitting in the root. */
+    private fun locationFor(entry: CacheEntry): String? =
+        entry.parentRel?.split('/')?.filter(String::isNotBlank)?.joinToString(" / ")?.ifEmpty { null }
 }

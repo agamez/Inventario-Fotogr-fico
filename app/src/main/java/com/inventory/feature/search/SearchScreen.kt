@@ -42,7 +42,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.inventory.R
-import java.io.File
+import com.inventory.ui.rememberBackendModel
 
 /** Row count at which the DAO's `LIMIT 100` starts truncating results. */
 private const val SEARCH_RESULT_LIMIT = 100
@@ -50,11 +50,11 @@ private const val SEARCH_RESULT_LIMIT = 100
 /**
  * Global search over the storage index: type to filter by EXIF
  * description or note across all folders, or leave the field blank to
- * browse everything (newest first). Each row shows a thumbnail loaded
- * straight from the photo file and the container folder path (relative
- * to the inventory root) where the item lives; tapping jumps to that
- * folder's browse screen via [onOpenPhoto] (absolute path). [onBack] pops
- * this screen.
+ * browse everything (newest first). Each row shows a thumbnail resolved
+ * through the active storage backend and the container folder path
+ * (relative to the inventory root, "Building / Shelf A") where the item
+ * lives; tapping jumps to that folder's browse screen via [onOpenPhoto]
+ * (relative path; "" = the root). [onBack] pops this screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -146,10 +146,11 @@ fun SearchScreen(
                             }
                             items(
                                 items = uiState.results,
-                                key = { hit -> hit.entry.path },
+                                key = { hit -> hit.entry.relPath },
                             ) { hit ->
                                 SearchResultRow(
                                     hit = hit,
+                                    photoLoader = viewModel::photoModel,
                                     onClick = { onOpenPhoto(viewModel.containerOf(hit)) },
                                 )
                             }
@@ -171,13 +172,15 @@ fun SearchScreen(
 }
 
 /**
- * One search hit: a real thumbnail of the item (the JPEG on disk, which
- * Coil samples lazily by itself), its description, its container folder
- * path relative to the inventory root, and a jump to that folder.
+ * One search hit: a real thumbnail of the item (resolved through the
+ * active storage backend, which Coil samples lazily by itself), its
+ * description, its container folder path relative to the inventory root,
+ * and a jump to that folder.
  */
 @Composable
 private fun SearchResultRow(
     hit: SearchViewModel.SearchHit,
+    photoLoader: suspend (String) -> Any?,
     onClick: () -> Unit,
 ) {
     val entry = hit.entry
@@ -193,13 +196,13 @@ private fun SearchResultRow(
         },
         supportingContent = {
             Text(
-                text = hit.location,
+                text = hit.location ?: stringResource(R.string.search_no_box),
                 style = MaterialTheme.typography.bodyMedium,
             )
         },
         leadingContent = {
             AsyncImage(
-                model = File(entry.path),
+                model = rememberBackendModel(entry.relPath, photoLoader),
                 contentDescription = null,
                 modifier = Modifier
                     .size(48.dp)

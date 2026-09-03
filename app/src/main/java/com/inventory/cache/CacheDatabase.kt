@@ -6,12 +6,15 @@ import androidx.room.RoomDatabase
 /**
  * The disposable index database ("cache.db"): a rebuildable mirror of the
  * filesystem tree, never a source of truth, never migrated — wipe it and
- * let [InventoryScanner] rescan and everything is back. Version 1 starts
- * here precisely because no version will ever need migrating.
+ * let [InventoryScanner] rescan and everything is back. Version 2 keyed
+ * the table on RELATIVE paths (dual-mode storage made absolute File paths
+ * the wrong identity); the bump ships with
+ * `fallbackToDestructiveMigration` BECAUSE the cache is disposable by
+ * design — any future schema change may wipe and rescan, not migrate.
  */
 @Database(
     entities = [CacheEntry::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 abstract class CacheDatabase : RoomDatabase() {

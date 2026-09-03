@@ -5,12 +5,15 @@ import android.net.Uri
 /**
  * Route contracts for the app's navigation graph.
  *
- * The filesystem made paths the identity of everything, so the arguments
- * below are ABSOLUTE FILE PATHS, URL-encoded on the way in ([buildContainerRoute]
- * and friends) and automatically decoded by Navigation into each feature
- * ViewModel's `SavedStateHandle` under [ARG_PATH] — the contract every
- * ViewModel reads. `inventory` is the storage root itself and takes no
- * arguments.
+ * The filesystem made paths the identity of everything, and dual-mode
+ * storage made those paths RELATIVE (root = `""`, e.g.
+ * "Building/Storage unit") so one route means the same entry under the
+ * SAF tree and under `/sdcard/PhotoInventory`. The arguments below are
+ * relative folder paths, URL-encoded on the way in ([buildContainerRoute]
+ * and friends — never with the empty root path: the root has its own
+ * [Inventory] destination) and automatically decoded by Navigation into
+ * each feature ViewModel's `SavedStateHandle` under [ARG_PATH] — the
+ * contract every ViewModel reads.
  */
 sealed class Screens(val route: String) {
 
@@ -32,13 +35,13 @@ sealed class Screens(val route: String) {
     companion object {
         const val ARG_PATH = "path"
 
-        /** Builds a concrete [Container] route for the folder at [path]. */
-        fun buildContainerRoute(path: String) = "container/" + Uri.encode(path)
+        /** Builds a concrete [Container] route for the folder at [relPath] (non-empty). */
+        fun buildContainerRoute(relPath: String) = "container/" + Uri.encode(relPath)
 
-        /** Builds a concrete [Camera] route saving into the folder at [path]. */
-        fun buildCameraRoute(path: String) = "camera/" + Uri.encode(path)
+        /** Builds a concrete [Camera] route saving into the folder at [relPath] (non-empty). */
+        fun buildCameraRoute(relPath: String) = "camera/" + Uri.encode(relPath)
 
-        /** Builds a concrete [CoverCapture] route for the folder at [path]. */
-        fun buildCoverRoute(path: String) = "cover/" + Uri.encode(path)
+        /** Builds a concrete [CoverCapture] route for the folder at [relPath] (non-empty). */
+        fun buildCoverRoute(relPath: String) = "cover/" + Uri.encode(relPath)
     }
 }

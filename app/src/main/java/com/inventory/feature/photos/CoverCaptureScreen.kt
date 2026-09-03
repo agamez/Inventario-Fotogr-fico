@@ -35,15 +35,16 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.inventory.R
-import java.io.File
+import com.inventory.ui.rememberPreviewBitmap
 import kotlinx.coroutines.launch
 
 /**
  * Camera screen dedicated to setting one container folder's cover photo
- * (nav argument `path`): the reusable [CameraCaptureCore] plus a
- * lightweight preview confirm — covers are identity, not items, so there
- * is no metadata to enter. Save promotes the staged file to `_cover.jpg`
- * byte-identically and asks the screen to navigate back via
+ * (nav argument `path` = RELATIVE folder path): the reusable
+ * [CameraCaptureCore] plus a lightweight preview confirm — covers are
+ * identity, not items, so there is no metadata to enter. Save promotes
+ * the pending bytes to `_cover.jpg` byte-identically and asks the screen
+ * to navigate back via
  * [CoverCaptureViewModel.CoverCaptureEvent.NavigateBack].
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -102,7 +103,7 @@ fun CoverCaptureScreen(
     pending?.let { staged ->
         key(staged) {
             CoverConfirmDialog(
-                imageFile = staged,
+                imageBytes = staged,
                 onSave = viewModel::save,
                 onDiscard = viewModel::discardPending,
             )
@@ -110,10 +111,10 @@ fun CoverCaptureScreen(
     }
 }
 
-/** Preview-only confirm for the just-captured (staged) cover frame. */
+/** Preview-only confirm for the just-captured cover frame (staged bytes). */
 @Composable
 private fun CoverConfirmDialog(
-    imageFile: File,
+    imageBytes: ByteArray,
     onSave: () -> Unit,
     onDiscard: () -> Unit,
 ) {
@@ -122,7 +123,7 @@ private fun CoverConfirmDialog(
         title = { Text(stringResource(R.string.set_photo)) },
         text = {
             AsyncImage(
-                model = imageFile,
+                model = rememberPreviewBitmap(imageBytes),
                 contentDescription = null,
                 contentScale = ContentScale.Fit,
                 modifier = Modifier
