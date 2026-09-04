@@ -11,6 +11,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asComposeImageBitmap
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
@@ -19,7 +22,26 @@ import com.inventory.desktop.ui.App
 import com.inventory.desktop.ui.DesktopStrings
 import com.inventory.desktop.ui.FolderGate
 import java.io.File
+import javax.imageio.ImageIO
 import kotlinx.coroutines.runBlocking
+import org.jetbrains.skiko.toBitmap
+
+/**
+ * The window/taskbar icon: `icon.png` is packaged at the JAR root by the
+ * desktop build. Read once via ImageIO, converted to a Skia bitmap
+ * (skiko `toBitmap`) and wrapped as a Compose `Painter` for the 1.6.x
+ * `Window(icon = …)` parameter. Returns null if the resource is missing
+ * so the window simply falls back to the platform default.
+ */
+private val windowIconPainter: Painter? by lazy {
+    runCatching {
+        DesktopStrings::class.java.getResourceAsStream("/icon.png")?.use { png ->
+            ImageIO.read(png)?.let { bitmap ->
+                BitmapPainter(bitmap.toBitmap().asComposeImageBitmap())
+            }
+        }
+    }.getOrNull()
+}
 
 /**
  * The desktop entry point. With `--headless-selftest <folder>` it runs
@@ -60,6 +82,7 @@ fun main(args: Array<String>) {
                 exitApplication()
             },
             title = DesktopStrings.WINDOW_TITLE,
+            icon = windowIconPainter,
             state = rememberWindowState(width = 1100.dp, height = 750.dp),
         ) {
             MaterialTheme(

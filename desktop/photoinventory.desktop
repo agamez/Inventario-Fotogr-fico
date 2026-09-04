@@ -1,0 +1,32 @@
+# PhotoInventory — Linux desktop launcher TEMPLATE (not installed automatically).
+#
+# The app ships as a fat JAR: build it with
+#     ./gradlew :desktop:packageFatJar
+# producing desktop/build/compose/jars/photoinventory-linux-x64-<version>.jar
+# (run on the system JRE; no bundled runtime).
+#
+# Manual installation (adjust paths to your layout):
+#   1. mkdir -p ~/.local/share/applications ~/.local/share/icons/hicolor/512x512/apps
+#   2. cp desktop/src/jvmMain/resources/icon.png \
+#        ~/.local/share/icons/hicolor/512x512/apps/photoinventory.png
+#   3. cp desktop/photoinventory.desktop ~/.local/share/applications/
+#   4. Edit Exec= and Icon= below to the real absolute paths, then remove
+#      these '#' header lines (the .desktop key-file spec does not officially
+#      define comments; most readers tolerate them but some validators do not).
+#   5. update-desktop-database ~/.local/share/applications (optional)
+#
+# The window itself also sets its icon from icon.png embedded in the JAR,
+# so the taskbar/titlebar icon works even when launched via `java -jar`
+# without this launcher file.
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=PhotoInventory
+Name[es]=Inventario Fotográfico
+GenericName=Photo inventory
+Comment=Browse and inventory photo folders on disk
+Exec=java -jar /PATH/TO/photoinventory-linux-x64-1.0.0.jar
+Icon=/PATH/TO/photoinventory.png
+Terminal=false
+Categories=Graphics;Photography;Utility;
+StartupWMClass=photoinventory

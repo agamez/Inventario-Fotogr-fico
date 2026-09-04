@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Solid teal background for the adaptive launcher icon
+         (brand primary from ui/theme/Color.kt). -->
+    <color name="ic_launcher_background">#00696A</color>
+</resources>
