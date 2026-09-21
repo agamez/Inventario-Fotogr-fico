@@ -83,7 +83,7 @@ class VisionClientTest {
                 body.contains("short item name, 2-6 words"),
                 "request carries the labeling prompt",
             )
-            assertTrue(body.contains("\"max_tokens\":300"), "token cap is sent")
+            assertTrue(body.contains("\"max_tokens\":2048"), "token cap is sent")
         }
     }
 
@@ -126,6 +126,49 @@ class VisionClientTest {
         }
     }
 
+    @Test
+    fun pingSucceedsWhenReasoningModelTruncatesTheReply() = runTest {
+        // The captured gemma4 shape: content is null and finish_reason is
+        // "length" because reasoning consumed the whole token budget.
+        withServer(responseBody = TRUNCATED_PING_REPLY) { server ->
+            assertEquals(VisionOutcome.Suggested("OK", null), client(server).ping())
+        }
+    }
+
+    @Test
+    fun describeReportsTokenBudgetExhaustion() = runTest {
+        withServer(responseBody = TRUNCATED_PING_REPLY) { server ->
+            val outcome = client(server).describe(byteArrayOf(1, 2, 3))
+            assertTrue(outcome is VisionOutcome.Failed, "got $outcome")
+            assertTrue(outcome.reason.contains("tokens"), "reason was ${outcome.reason}")
+        }
+    }
+
+    @Test
+    fun describeParsesArrayOfTextParts() = runTest {
+        // Some OpenAI-compatible servers return content as an array of
+        // parts; only the "text" parts form the JSON contract.
+        withServer(responseBody = ARRAY_CONTENT_REPLY) { server ->
+            assertEquals(
+                VisionOutcome.Suggested("Red", "A solid, uniform red color."),
+                client(server).describe(byteArrayOf(4, 5, 6)),
+            )
+        }
+    }
+
+    @Test
+    fun describeParsesSuggestionWithReasoningContentAlongside() = runTest {
+        // The real successful fixture: a clean JSON string in content with
+        // a reasoning_content field next to it.
+        val content = "{\"description\": \"Red\", \"note\": \"A solid, uniform red color.\"}"
+        withServer(responseBody = reasoningCompletion(content)) { server ->
+            assertEquals(
+                VisionOutcome.Suggested("Red", "A solid, uniform red color."),
+                client(server).describe(byteArrayOf(7, 8, 9)),
+            )
+        }
+    }
+
     /** Wraps [content] in the minimal chat-completion envelope. */
     private fun chatCompletion(content: String): String = buildJsonObject {
         putJsonArray("choices") {
@@ -138,9 +181,45 @@ class VisionClientTest {
         }
     }.toString()
 
+    /** The captured reasoning-model envelope: content plus reasoning_content. */
+    private fun reasoningCompletion(content: String): String = buildJsonObject {
+        putJsonArray("choices") {
+            addJsonObject {
+                put("index", 0)
+                put("finish_reason", "stop")
+                putJsonObject("message") {
+                    put("role", "assistant")
+                    put("reasoning_content", "*")
+                    putJsonObject("provider_specific_fields") {
+                        put("reasoning", "*")
+                        put("reasoning_content", "*")
+                    }
+                    put("content", content)
+                }
+            }
+        }
+    }.toString()
+
     private companion object {
         const val CHAT_PATH = "/v1/chat/completions"
         const val TEST_KEY = "test-secret-key"
         const val TEST_MODEL = "vision-test-model"
+
+        /** Captured gemma4 reply truncated by reasoning (content is null). */
+        val TRUNCATED_PING_REPLY = """
+            {"id":"chatcmpl-truncated","created":1,"model":"gemma4","object":"chat.completion",
+            "choices":[{"finish_reason":"length","index":0,
+            "message":{"role":"assistant","reasoning_content":"*",
+            "provider_specific_fields":{"refusal":null,"reasoning":"*","reasoning_content":"*"},
+            "content":null},"provider_specific_fields":{}}],"usage":{}}
+        """.trimIndent()
+
+        /** Captured multi-part reply: the JSON contract split across text parts. */
+        val ARRAY_CONTENT_REPLY = """
+            {"id":"chatcmpl-array","created":2,"model":"gemma4","object":"chat.completion",
+            "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":[
+            {"type":"text","text":"{\"description\": \"Red\", "},
+            {"type":"text","text":"\"note\": \"A solid, uniform red color.\"}"}]}}]}
+        """.trimIndent()
     }
 }

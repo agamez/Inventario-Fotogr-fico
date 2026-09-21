@@ -18,6 +18,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import androidx.compose.ui.window.rememberWindowState
+import com.inventory.ai.VisionClient
+import com.inventory.ai.VisionConfig
+import com.inventory.ai.VisionOutcome
 import com.inventory.desktop.ui.App
 import com.inventory.desktop.ui.DesktopStrings
 import com.inventory.desktop.ui.FolderGate
@@ -46,7 +49,10 @@ private val windowIconPainter: Painter? by lazy {
 /**
  * The desktop entry point. With `--headless-selftest <folder>` it runs
  * the scripted end-to-end scenario against that folder and exits 0/1 —
- * the verification path that needs no display. Otherwise it opens the
+ * the verification path that needs no display. With
+ * `--ai-test <baseUrl> <apiKey> <model> [imagePath]` it exercises the
+ * shared AI client against a live OpenAI-compatible server and exits
+ * 0/1. Otherwise it opens the
  * 1100x750 window: it loads the saved root from [DesktopConfig], shows
  * the folder gate when none is usable, and otherwise builds the
  * [DesktopAppController] (watcher + initial index rebuild) and hands it
@@ -66,6 +72,9 @@ fun main(args: Array<String>) {
         }
         val passed = runBlocking { runHeadlessSelfTest(File(folder)) }
         System.exit(if (passed) 0 else 1)
+    }
+    if (args.firstOrNull() == "--ai-test") {
+        System.exit(runAiTest(args.drop(1)))
     }
     application {
         // The config read is one synchronous properties file — done once
@@ -102,4 +111,54 @@ fun main(args: Array<String>) {
             }
         }
     }
+}
+
+/**
+ * `--ai-test <baseUrl> <apiKey> <model> [imagePath]` — validates a live
+ * OpenAI-compatible AI configuration through the shared [VisionClient]:
+ * always [VisionClient.ping], plus [VisionClient.describe] when an image
+ * path is given. Prints one human-readable line per check and returns the
+ * process exit code (0 when every requested check succeeded, 1 otherwise).
+ * The API key is sent as a bearer token but never printed; [arguments]
+ * carries the raw CLI values with the flag already removed.
+ */
+private fun runAiTest(arguments: List<String>): Int {
+    if (arguments.size !in 3..4) {
+        System.err.println("usage: --ai-test <baseUrl> <apiKey> <model> [imagePath]")
+        return 1
+    }
+    val client = VisionClient(
+        VisionConfig(baseUrl = arguments[0], apiKey = arguments[1], model = arguments[2]),
+    )
+    var allPassed = true
+
+    when (val ping = runBlocking { client.ping() }) {
+        is VisionOutcome.Suggested -> println("ping: OK")
+        is VisionOutcome.Failed -> {
+            println("ping: FAILED — ${ping.reason}")
+            allPassed = false
+        }
+    }
+
+    val imagePath = arguments.getOrNull(3)
+    if (imagePath != null) {
+        val bytes = runCatching { File(imagePath).readBytes() }.getOrNull()
+        if (bytes == null) {
+            println("describe: FAILED — cannot read image at $imagePath")
+            allPassed = false
+        } else {
+            when (val describe = runBlocking { client.describe(bytes) }) {
+                is VisionOutcome.Suggested -> {
+                    val note = describe.note?.let { "\"$it\"" } ?: "none"
+                    println("describe: OK — description=\"${describe.description}\" note=$note")
+                }
+                is VisionOutcome.Failed -> {
+                    println("describe: FAILED — ${describe.reason}")
+                    allPassed = false
+                }
+            }
+        }
+    }
+
+    return if (allPassed) 0 else 1
 }

@@ -8,8 +8,11 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -45,7 +48,7 @@ val lenientJson: Json = Json {
  *
  * [describe] sends a JPEG as a `data:` URL inside a chat-completion request
  * and asks the model for a small JSON object with an item description and an
- * optional note. [ping] sends a one-token text request for the settings
+ * optional note. [ping] sends a small text request for the settings
  * "Test connection" button. Both wrap blocking [HttpURLConnection] I/O in
  * [Dispatchers.IO]; all JSON is built with kotlinx-serialization, never by
  * concatenating user data.
@@ -83,12 +86,30 @@ class VisionClient(
             put("max_tokens", MAX_TOKENS_DESCRIBE)
         }
         return when (val raw = execute(body)) {
-            is RawResult.Ok -> parseSuggestion(raw.content)
+            is RawResult.Ok -> {
+                val content = contentText(raw.reply.content)
+                if (content == null) {
+                    val reason = if (raw.reply.finishReason == FINISH_LENGTH) {
+                        REASON_TOKEN_BUDGET
+                    } else {
+                        REASON_NO_CONTENT
+                    }
+                    VisionOutcome.Failed(reason)
+                } else {
+                    parseSuggestion(content)
+                }
+            }
             is RawResult.Error -> VisionOutcome.Failed(raw.reason)
         }
     }
 
-    /** Tiny text-only round trip used by the "Test connection" button. */
+    /**
+     * Tiny text-only round trip used by the "Test connection" button. It
+     * only proves connectivity: HTTP 200 with a `choices` array is a
+     * success even when the content is null, because reasoning models may
+     * spend the whole budget on reasoning and return a truncated (empty)
+     * assistant message.
+     */
     suspend fun ping(): VisionOutcome {
         val body = buildJsonObject {
             put("model", config.model)
@@ -125,11 +146,11 @@ class VisionClient(
             val code = connection.responseCode
             if (code == HTTP_OK) {
                 val text = connection.inputStream.use { it.readBytes().toString(Charsets.UTF_8) }
-                val content = extractContent(text)
-                if (content == null) {
+                val reply = extractReply(text)
+                if (reply == null) {
                     RawResult.Error(REASON_UNEXPECTED_REPLY)
                 } else {
-                    RawResult.Ok(content)
+                    RawResult.Ok(reply)
                 }
             } else {
                 RawResult.Error(httpError(code, connection))
@@ -156,18 +177,37 @@ class VisionClient(
         return if (parsed == null) "HTTP $code" else "HTTP $code: $snippet"
     }
 
-    /** choices[0].message.content, or null when the envelope is not a chat completion. */
-    private fun extractContent(text: String): String? {
+    /**
+     * choices[0] of a chat completion as a [Reply], or null when the
+     * envelope is not a chat completion with a usable choice. The message
+     * content is returned raw so callers can decide how to flatten it.
+     */
+    private fun extractReply(text: String): Reply? {
         val root = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull() ?: return null
-        val message = root["choices"]?.jsonArray
-            ?.firstOrNull()
-            ?.jsonObject
-            ?.get("message")
-            ?.jsonObject
-            ?: return null
-        val content = message["content"] ?: return null
-        if (content is JsonNull) return null
-        return runCatching { content.jsonPrimitive.contentOrNull }.getOrNull()
+        val choice = root["choices"]?.jsonArray?.firstOrNull()?.jsonObject ?: return null
+        val message = choice["message"]?.jsonObject
+        val finishReason = (choice["finish_reason"] as? JsonPrimitive)?.contentOrNull
+        return Reply(content = message?.get("content"), finishReason = finishReason)
+    }
+
+    /**
+     * Flattens an assistant message content node to plain text. OpenAI's
+     * chat-completions reply is usually a JSON string, but multimodal
+     * endpoints may return an array of parts; only `"type":"text"` parts
+     * contribute, their `text` fields concatenated in order. JSON null and
+     * a missing node both flatten to null.
+     */
+    private fun contentText(content: JsonElement?): String? {
+        if (content == null || content is JsonNull) return null
+        return when (content) {
+            is JsonPrimitive -> content.contentOrNull
+            is JsonArray -> content.mapNotNull { part ->
+                val obj = part as? JsonObject ?: return@mapNotNull null
+                if ((obj["type"] as? JsonPrimitive)?.contentOrNull != "text") return@mapNotNull null
+                (obj["text"] as? JsonPrimitive)?.contentOrNull
+            }.joinToString(separator = "")
+            else -> null
+        }
     }
 
     /** Leniently pulls `{description, note}` out of a model reply. */
@@ -190,11 +230,15 @@ class VisionClient(
         const val HTTP_OK = 200
         const val CONNECT_TIMEOUT_MS = 10_000
         const val READ_TIMEOUT_MS = 45_000
-        const val MAX_TOKENS_DESCRIBE = 300
-        const val MAX_TOKENS_PING = 5
+        const val MAX_TOKENS_DESCRIBE = 2048
+        const val MAX_TOKENS_PING = 512
         const val MAX_ERROR_SNIPPET = 200
+        const val FINISH_LENGTH = "length"
         const val REASON_UNEXPECTED_REPLY = "unexpected reply format"
         const val REASON_EMPTY_DESCRIPTION = "empty description"
+        const val REASON_NO_CONTENT = "model returned no content"
+        const val REASON_TOKEN_BUDGET =
+            "model used all tokens before answering (reasoning models need a larger budget)"
         const val PING_PROMPT = "Reply with the single word OK"
 
         const val PROMPT =
@@ -223,8 +267,15 @@ private fun stripCodeFences(text: String): String {
     return value.removeSuffix("```").trim()
 }
 
+/**
+ * choices[0] of a chat completion: the raw `message.content` node (a JSON
+ * string, an array of parts or null for reasoning models that answered
+ * nothing) and the `finish_reason` that explains why generation stopped.
+ */
+private data class Reply(val content: JsonElement?, val finishReason: String?)
+
 /** Outcome of the raw HTTP exchange, before any reply-specific parsing. */
 private sealed interface RawResult {
-    data class Ok(val content: String) : RawResult
+    data class Ok(val reply: Reply) : RawResult
     data class Error(val reason: String) : RawResult
 }
