@@ -64,6 +64,63 @@ FILE_MODE_BTN = "All files access (advanced)"           # all_files_access
 GRANT_ACCESS_BTN = "Grant access"                       # gate button (FILE, blocked)
 MODE_CHANGED_SNACK = "Storage mode changed"             # storage_mode_changed (prefix)
 MODE_SAF_LABEL = "Folder pick"                          # mode_saf_label (dialog)
+# Optional AI auto-label: settings + save-dialog status (strings.xml ai_*).
+SETTINGS_TITLE = "Settings"                             # settings_title
+AI_ENABLE_LABEL = "AI auto-label"                       # ai_enable
+AI_BASE_LABEL = "API base URL"                          # ai_base_url
+AI_TEST_BTN = "Test connection"                         # ai_test_connection
+AI_TEST_OK = "Connection OK"                            # ai_test_ok
+AI_THINKING = "Asking AI\u2026"                         # ai_suggestion_thinking
+AI_READY = "AI suggestion ready"                        # ai_suggestion_ready
+AI_FAILED = "AI suggestion failed"                      # ai_suggestion_failed
+MOCK_PORT = 8765
+MOCK_PATH = "/tmp/mock_openai.py"
+MOCK_LOG = "/tmp/mock_openai.log"
+
+# Host-side OpenAI-compatible mock, written out and launched by the AI
+# scenario. `describe` bodies (the vision call carries an `image_url` data
+# URL) are delayed by DESCRIBE_DELAY_S: on this emulator the photo-picker
+# round trip plus the uiautomator polling make the save sheet take a few
+# seconds to surface, so a short delay let the reply land before the guard
+# pick could type. 12 s keeps BOTH the "Asking AI…" window and the
+# "type first" guard deterministic (measured: request -> sheet detection
+# ~4 s, + typing ~3 s). `ping` (Test connection) answers immediately.
+MOCK_OPENAI_PY = r'''#!/usr/bin/env python3
+import json, sys, time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+DESCRIBE_DELAY_S = 12.0
+CONTENT = json.dumps({"description": "Mock item", "note": "added by mock server"})
+REPLY = json.dumps({"choices": [{"message": {"content": CONTENT}}]}).encode()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        body = self.rfile.read(length) if length else b""
+        kind = "describe" if b"image_url" in body else "ping"
+        print("POST %s bytes=%d kind=%s" % (self.path, len(body), kind), flush=True)
+        if self.path not in ("/v1/chat/completions", "/chat/completions"):
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if kind == "describe":
+            time.sleep(DESCRIBE_DELAY_S)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(REPLY)))
+        self.end_headers()
+        self.wfile.write(REPLY)
+
+    def log_message(self, *args):
+        pass
+
+
+if __name__ == "__main__":
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+'''
 
 passed = failed = 0
 failures = []
@@ -734,6 +791,118 @@ def cover_gallery_flow():
     if not dlg: return False
     tap_text("Save")
     return True
+
+# ---- optional AI auto-label helpers ----------------------------------------
+# The settings screen (root overflow -> Settings) mirrors VisionPrefs; the
+# save sheet pre-fills description/note from the model behind a blank-guard.
+# Selectors were measured on this build: the M3 Switch is the only
+# checkable node on the screen; the three OutlinedTextFields dump as
+# EditTexts in layout order (base URL, API key, model).
+
+def wait_port(port, timeout=10.0):
+    import socket
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            with socket.create_connection(("127.0.0.1", port), 0.5):
+                return True
+        except OSError:
+            time.sleep(0.2)
+    return False
+
+def ai_switch_node():
+    d = dump()
+    if d is None: return None
+    for n in d.iter():
+        if n.get("checkable") == "true" and n.get("class", "").endswith("Switch"):
+            return n
+    for n in d.iter():  # fallback: the settings screen has exactly one toggle
+        if n.get("checkable") == "true":
+            return n
+    return None
+
+def ai_switch_checked():
+    n = ai_switch_node()
+    return (n.get("checked") == "true") if n is not None else None
+
+def set_ai_switch(want):
+    n = ai_switch_node()
+    if n is None: return False
+    if (n.get("checked") == "true") != want:
+        tap(n); time.sleep(1.0)
+    return ai_switch_checked() == want
+
+def open_settings():
+    """From the root screen: overflow -> Settings. The settings destination
+    is only reachable from the root app bar, so this ascends first."""
+    if not go_home(): return False
+    if not open_screen_menu(): return False
+    time.sleep(1.0)
+    if not tap_text(SETTINGS_TITLE, timeout=5): return False
+    return wait_for(text=AI_ENABLE_LABEL, timeout=8) is not None
+
+def set_ai_text(index, value):
+    """Type into the settings' index-th field (layout order) via the
+    established tap -> wait IME -> clear -> type -> hide IME pattern. The
+    base-URL field is pre-filled and tapping it can land the caret mid-text,
+    so MOVE_END first — otherwise backspaces leave a tail and the new value
+    is inserted in the middle."""
+    fields = edit_texts()
+    if len(fields) <= index: return False
+    b = _bounds(fields[index].get("bounds", ""))
+    if b:
+        # Tap near the RIGHT edge: a centre tap lands the caret mid-text on
+        # a long pre-filled value (the default base URL measured exactly
+        # that), after which backspace only clears the prefix.
+        sh(f"input tap {b[2]-24} {(b[1]+b[3])//2}")
+    else:
+        tap(fields[index])
+    wait_ime(); time.sleep(0.4)
+    sh("input keyevent 123")  # KEYCODE_MOVE_END (belt and braces)
+    clear_field(); type_text(value)
+    ensure_ime_hidden(); time.sleep(0.5)
+    return True
+
+def wait_ai_fields(desc_value=None, note_value=None, timeout=20):
+    """Poll the save sheet's description/note fields. None means \"don't
+    care\"; returns (ok, last_seen_values)."""
+    end = time.time() + timeout
+    last = []
+    while time.time() < end:
+        vals = [f.get("text") for f in edit_texts()]
+        last = vals
+        if len(vals) >= 2 and (desc_value is None or vals[0] == desc_value) \
+                and (note_value is None or vals[1] == note_value):
+            return True, vals
+        time.sleep(0.5)
+    return False, last
+
+def gallery_pick_one(where=""):
+    """On a container screen: FAB -> Choose from gallery -> pick one ->
+    Add. Returns True once the mandatory-metadata sheet is up (single
+    image, so there is no 'more photos waiting' caption)."""
+    check(f"gallery flow opens [{where}]", tap_desc("Add"))
+    time.sleep(1.2)
+    check(f"sheet offers Choose from gallery [{where}]",
+          wait_for(text="Choose from gallery", timeout=5) is not None)
+    tap_text("Choose from gallery"); time.sleep(4.0)
+    dism = find_all(dump(), text="Dismiss")
+    if dism: tap(dism[0]); time.sleep(0.8)
+    photos = find_all(dump(), desc="Photo taken on")
+    check(f"gallery picker shows photos [{where}]", bool(photos), str(len(photos)))
+    if not photos: return False
+    tap(photos[0]); time.sleep(1.0)
+    end = time.time() + 8
+    add = None
+    while time.time() < end and add is None:
+        d = dump()
+        cands = [n for n in find_all(d, text="Add")] or [n for n in find_all(d, desc="Add")]
+        add = cands[0] if cands else None
+        if add is None: time.sleep(0.5)
+    check(f"picker Add button [{where}]", add is not None)
+    if add is None: return False
+    tap(add)
+    return wait_for(text="Description (required)", timeout=10) is not None
 
 # ---------------------------------------------------------------- scenarios
 
@@ -1506,11 +1675,150 @@ def t_pc_edits():
     no_filename_leaks("rebuilt UI shows no raw filenames anywhere")
     check("home reached after rebuild", go_home())
 
+def t_ai_autolabel():
+    """Optional AI auto-label end-to-end against a host-side mock OpenAI
+    endpoint: settings -> enable -> base URL/model -> Test connection ->
+    gallery pick -> status line + blank-guarded pre-fill -> disk/EXIF, the
+    overwrite guard (typed text must survive a late reply), and the disable
+    path. Self-contained: the feature is left OFF and the mock stopped, so
+    the final disk audit is unaffected apart from the three new files."""
+    mark("11 AI auto-label")
+    server = None
+    logf = None
+    try:
+        with open(MOCK_PATH, "w") as fh:
+            fh.write(MOCK_OPENAI_PY)
+        logf = open(MOCK_LOG, "w")
+        server = subprocess.Popen(
+            [sys.executable, MOCK_PATH, str(MOCK_PORT)],
+            stdout=logf, stderr=subprocess.STDOUT,
+        )
+        check("mock OpenAI server started", wait_port(MOCK_PORT, timeout=10),
+              f"pid={server.pid}")
+        rev = adb("reverse", f"tcp:{MOCK_PORT}", f"tcp:{MOCK_PORT}")
+        check("adb reverse tcp:8765 installed", rev.returncode == 0,
+              (rev.stdout + rev.stderr).strip())
+
+        # 1-3. home overflow -> Settings, enable AI, point it at the mock,
+        # then prove the round trip with the settings' own probe.
+        check("home before settings", go_home())
+        check("root overflow -> Settings", open_settings())
+        check("AI switch on", set_ai_switch(True))
+        check("settings shows the base URL field",
+              wait_for(text=AI_BASE_LABEL, timeout=5) is not None)
+        check("base URL typed", set_ai_text(0, f"http://127.0.0.1:{MOCK_PORT}/v1"))
+        check("model typed", set_ai_text(2, "mock-vision"))
+        vals = [f.get("text") for f in edit_texts()]
+        check("settings hold the mock config",
+              len(vals) >= 3 and vals[0] == f"http://127.0.0.1:{MOCK_PORT}/v1"
+              and vals[2] == "mock-vision", str(vals))
+        check("tap Test connection", tap_text(AI_TEST_BTN, timeout=5))
+        check("mock answers Connection OK",
+              wait_for(text=AI_TEST_OK, timeout=10) is not None)
+
+        # 4-5. back home, drill to the (still empty) Attic shelf container.
+        check("settings back to home", tap_desc("Back", timeout=5) and go_home())
+        tap_text("Attic shelf"); time.sleep(1.8)
+        check("in the Attic shelf container", bool(texts_exact("Attic shelf")))
+        check("container FAB present", wait_for(desc="Add", timeout=6) is not None)
+
+        # 6-8. gallery pick #1: in-flight status, pre-fill, ready, disk/EXIF.
+        check("gallery #1 opens the save dialog", gallery_pick_one("ai prefilled"))
+        check("save dialog shows the in-flight AI status",
+              wait_for(text=AI_THINKING, timeout=8) is not None)
+        ok, vals = wait_ai_fields("Mock item", "added by mock server", timeout=30)
+        check("AI pre-filled description 'Mock item'",
+              ok and vals[0] == "Mock item", str(vals))
+        check("AI pre-filled note 'added by mock server'",
+              len(vals) >= 2 and vals[1] == "added by mock server", str(vals))
+        check("save dialog shows 'AI suggestion ready'",
+              wait_for(text=AI_READY, timeout=8) is not None)
+        check("save AI-labelled photo", tap_text("Save photo", timeout=5))
+        mock = fp("Attic shelf", "Mock item.jpg")
+        time.sleep(1.5)
+        check("disk: Attic shelf/Mock item.jpg", fs_exists(mock))
+        tr = exif_triple(mock); EXIF_SAMPLES.append(("Attic shelf/Mock item.jpg", tr))
+        check("EXIF: AI description 'Mock item'", tr["desc"] == "Mock item", str(tr))
+        check("EXIF: AI note 'added by mock server'",
+              tr["note"] == "added by mock server", str(tr))
+
+        # 9. overwrite guard: type before the (delayed) reply lands. The
+        # description must survive; only the still-blank note may be filled.
+        check("gallery #2 opens the save dialog", gallery_pick_one("ai guard"))
+        fs = edit_texts()
+        check("guard dialog has both fields", len(fs) >= 2, str(len(fs)))
+        if len(fs) >= 2:
+            tap(fs[0]); wait_ime(); type_text("Manual name")
+            ensure_ime_hidden()
+        ok2, vals2 = wait_ai_fields(None, "added by mock server", timeout=30)
+        check("blank-guard: typed description survives the late reply",
+              bool(vals2) and vals2[0] == "Manual name", str(vals2))
+        check("blank-guard: empty note still pre-filled",
+              len(vals2) >= 2 and vals2[1] == "added by mock server", str(vals2))
+        check("save guarded photo", tap_text("Save photo", timeout=5))
+        manual = fp("Attic shelf", "Manual name.jpg")
+        time.sleep(1.5)
+        check("disk: Attic shelf/Manual name.jpg", fs_exists(manual))
+        tr2 = exif_triple(manual); EXIF_SAMPLES.append(("Attic shelf/Manual name.jpg", tr2))
+        check("EXIF: guard description 'Manual name'", tr2["desc"] == "Manual name", str(tr2))
+        check("EXIF: guard keeps the AI note",
+              tr2["note"] == "added by mock server", str(tr2))
+
+        # 10. disable: Settings -> off -> third pick has no AI affordance.
+        check("home for AI disable", go_home())
+        check("settings reopens for disable", open_settings())
+        check("AI switch off", set_ai_switch(False))
+        check("settings back after disable", tap_desc("Back", timeout=5) and go_home())
+        tap_text("Attic shelf"); time.sleep(1.8)
+        check("gallery #3 opens the save dialog", gallery_pick_one("ai disabled"))
+        d = dump()
+        check("no AI status line while disabled",
+              not any(find_all(d, text=s) for s in (AI_THINKING, AI_READY, AI_FAILED)))
+        fs = edit_texts()
+        check("disabled dialog leaves the description empty",
+              bool(fs) and fs[0].get("text") == "", str([f.get("text") for f in fs]))
+        if fs:
+            tap(fs[0]); wait_ime(); type_text("Plain item")
+            ensure_ime_hidden(); time.sleep(0.8)
+        check("save plain photo", tap_text("Save photo", timeout=5))
+        plain = fp("Attic shelf", "Plain item.jpg")
+        time.sleep(1.5)
+        check("disk: Attic shelf/Plain item.jpg", fs_exists(plain))
+        tr3 = exif_triple(plain); EXIF_SAMPLES.append(("Attic shelf/Plain item.jpg", tr3))
+        check("EXIF: plain description", tr3["desc"] == "Plain item", str(tr3))
+        check("EXIF: plain has no AI note", not tr3["note"], str(tr3))
+
+        # 11. leave the feature off, then read the mock's request log.
+        check("home for final AI check", go_home())
+        check("settings reopens for final check", open_settings())
+        check("AI left disabled", ai_switch_checked() is False, str(ai_switch_checked()))
+        check("settings back after final check", tap_desc("Back", timeout=5))
+        if logf is not None:
+            logf.flush()
+        served = open(MOCK_LOG).read() if os.path.exists(MOCK_LOG) else ""
+        check("mock served the ping and both describes",
+              served.count("kind=ping") >= 1 and served.count("kind=describe") >= 2,
+              served.replace("\n", " | "))
+    finally:
+        adb("reverse", "--remove", f"tcp:{MOCK_PORT}")
+        if logf is not None:
+            try: logf.close()
+            except Exception: pass
+        if server is not None:
+            server.terminate()
+            try:
+                server.wait(timeout=5)
+            except Exception:
+                server.kill()
+
 def t_disk_final():
-    mark("11 disk final")
+    mark("12 disk final")
     exp = sorted([
         FS_ROOT,
         fp("Attic shelf"),
+        fp("Attic shelf", "Manual name.jpg"),
+        fp("Attic shelf", "Mock item.jpg"),
+        fp("Attic shelf", "Plain item.jpg"),
         fp("Estate"),
         fp("Estate", "Garage"),
         fp("Estate", "Storage unit"),
@@ -1542,6 +1850,18 @@ def t_disk_final():
     t3 = exif_triple(fp("Estate", "Storage unit", "Shelf B", "Old skis.jpg"))
     check("final EXIF: Old skis desc, no note",
           t3["desc"] == "Old skis" and not t3["note"], str(t3))
+    tm = exif_triple(fp("Attic shelf", "Mock item.jpg"))
+    EXIF_SAMPLES.append(("final Attic shelf/Mock item.jpg", tm))
+    check("final EXIF: AI photo desc+note",
+          tm["desc"] == "Mock item" and tm["note"] == "added by mock server", str(tm))
+    tg = exif_triple(fp("Attic shelf", "Manual name.jpg"))
+    EXIF_SAMPLES.append(("final Attic shelf/Manual name.jpg", tg))
+    check("final EXIF: guard photo desc+note",
+          tg["desc"] == "Manual name" and tg["note"] == "added by mock server", str(tg))
+    tp = exif_triple(fp("Attic shelf", "Plain item.jpg"))
+    EXIF_SAMPLES.append(("final Attic shelf/Plain item.jpg", tp))
+    check("final EXIF: plain photo desc, no note",
+          tp["desc"] == "Plain item" and not tp["note"], str(tp))
     dbs = sh("run-as com.inventory ls databases 2>/dev/null")
     check("cache.db present as the rebuildable index", "cache.db" in dbs, dbs)
 
@@ -1602,6 +1922,7 @@ def main():
     t_covers()
     t_conflicts()
     t_pc_edits()
+    t_ai_autolabel()
     t_disk_final()
     print(f"\n===== {passed} passed, {failed} failed, {len(soft_warnings)} warnings =====")
     print("Per-scenario (passed/total):")
