@@ -40,6 +40,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.inventory.R
+import com.inventory.ai.VisionOutcome
 import com.inventory.ui.rememberPreviewBitmap
 import kotlinx.coroutines.launch
 
@@ -61,6 +62,8 @@ fun CameraCaptureScreen(
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val pending by viewModel.pending.collectAsStateWithLifecycle()
+    val suggestion by viewModel.suggestion.collectAsStateWithLifecycle()
+    val aiEnabled by viewModel.aiEnabled.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
@@ -110,6 +113,8 @@ fun CameraCaptureScreen(
         key(staged) {
             CaptureSaveDialog(
                 imageBytes = staged,
+                aiEnabled = aiEnabled,
+                suggestion = suggestion,
                 onSave = { description, note -> viewModel.save(description, note) },
                 onDiscard = viewModel::discardPending,
             )
@@ -126,11 +131,21 @@ fun CameraCaptureScreen(
 @Composable
 private fun CaptureSaveDialog(
     imageBytes: ByteArray,
+    aiEnabled: Boolean,
+    suggestion: VisionOutcome?,
     onSave: (String, String?) -> Unit,
     onDiscard: () -> Unit,
 ) {
     var description by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
+
+    // Blank-guarded pre-fill: a late AI reply never overwrites typed text.
+    LaunchedEffect(suggestion) {
+        val ready = suggestion as? VisionOutcome.Suggested ?: return@LaunchedEffect
+        if (description.isBlank()) description = ready.description
+        val suggestedNote = ready.note
+        if (note.isBlank() && !suggestedNote.isNullOrBlank()) note = suggestedNote
+    }
 
     AlertDialog(
         onDismissRequest = onDiscard,
@@ -161,6 +176,19 @@ private fun CaptureSaveDialog(
                     label = { Text(stringResource(R.string.photo_note_label)) },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (aiEnabled) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    val status = when (suggestion) {
+                        null -> R.string.ai_suggestion_thinking
+                        is VisionOutcome.Suggested -> R.string.ai_suggestion_ready
+                        is VisionOutcome.Failed -> R.string.ai_suggestion_failed
+                    }
+                    Text(
+                        text = stringResource(status),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         },
         confirmButton = {

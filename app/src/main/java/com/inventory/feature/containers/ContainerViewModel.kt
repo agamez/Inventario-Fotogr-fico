@@ -8,6 +8,9 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.R
+import com.inventory.ai.VisionClient
+import com.inventory.ai.VisionOutcome
+import com.inventory.ai.VisionPrefs
 import com.inventory.cache.CacheDao
 import com.inventory.cache.CacheEntry
 import com.inventory.cache.ChildCounts
@@ -16,6 +19,7 @@ import com.inventory.storage.InventoryStore
 import com.inventory.storage.StorageMode
 import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -64,6 +68,7 @@ class ContainerViewModel @Inject constructor(
     private val dao: CacheDao,
     private val scanner: InventoryScanner,
     private val messageBus: UserMessageBus,
+    private val visionPrefs: VisionPrefs,
 ) : ViewModel() {
 
     /**
@@ -245,13 +250,41 @@ class ContainerViewModel @Inject constructor(
         )
 
     /**
-     * Staged images captured or picked but still lacking their mandatory
-     * description; the save sheet edits [List.first] and pops it on
-     * success. Cancelling the sheet drops the whole queue (bytes live in
-     * memory only — nothing to clean up on disk).
+     * One staged gallery image with a stable [id]: the save sheet edits the
+     * head and pops it on success, and the optional AI suggestion is keyed
+     * by the id so a reply that lands after the queue moved on is simply
+     * ignored. Cancelling drops the whole queue (bytes live in memory only
+     * — nothing to clean up on disk).
      */
-    private val _pendingQueue = MutableStateFlow<List<ByteArray>>(emptyList())
-    val pendingQueue: StateFlow<List<ByteArray>> = _pendingQueue.asStateFlow()
+    data class PendingPhoto(val id: Long, val bytes: ByteArray)
+
+    private val pendingIdCounter = AtomicLong(0)
+
+    private val _pendingQueue = MutableStateFlow<List<PendingPhoto>>(emptyList())
+    val pendingQueue: StateFlow<List<PendingPhoto>> = _pendingQueue.asStateFlow()
+
+    private val _aiSuggestions = MutableStateFlow<Map<Long, VisionOutcome>>(emptyMap())
+
+    /**
+     * AI replies for queued photos, keyed by [PendingPhoto.id]. Cleared
+     * with the queue; an in-flight reply for a photo that is no longer
+     * queued is dropped.
+     */
+    val aiSuggestions: StateFlow<Map<Long, VisionOutcome>> = _aiSuggestions.asStateFlow()
+
+    /**
+     * True while the feature is on AND a model is configured — the save
+     * dialog only shows AI status when calls can actually happen.
+     */
+    val aiEnabled: StateFlow<Boolean> = combine(
+        visionPrefs.enabled,
+        visionPrefs.model,
+    ) { enabled, model -> enabled && model.isNotBlank() }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = visionPrefs.isActive(),
+        )
 
     private val _pendingCover = MutableStateFlow<PendingCoverUpload?>(null)
 
@@ -569,7 +602,20 @@ class ContainerViewModel @Inject constructor(
 
     fun onImagesPicked(images: List<ByteArray>) {
         if (images.isEmpty()) return
-        _pendingQueue.value = images
+        val photos = images.map { PendingPhoto(pendingIdCounter.incrementAndGet(), it) }
+        _pendingQueue.value = photos
+        _aiSuggestions.value = emptyMap()
+        if (!visionPrefs.isActive()) return
+        val client = VisionClient(visionPrefs.config())
+        photos.forEach { photo ->
+            viewModelScope.launch {
+                val outcome = client.describe(photo.bytes)
+                // A reply that lands after its photo left the queue is ignored.
+                if (_pendingQueue.value.any { it.id == photo.id }) {
+                    _aiSuggestions.update { it + (photo.id to outcome) }
+                }
+            }
+        }
     }
 
     /**
@@ -589,7 +635,7 @@ class ContainerViewModel @Inject constructor(
             when (
                 store.addPhoto(
                     folderRel = folderRel,
-                    bytes = head,
+                    bytes = head.bytes,
                     description = description,
                     note = rawNote?.trim()?.ifEmpty { null },
                     takenAt = System.currentTimeMillis(),
@@ -612,6 +658,7 @@ class ContainerViewModel @Inject constructor(
 
     fun discardPendingPhotos() {
         _pendingQueue.value = emptyList()
+        _aiSuggestions.value = emptyMap()
     }
 
     fun deletePhoto(relPath: String) {

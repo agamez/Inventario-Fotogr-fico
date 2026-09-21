@@ -100,6 +100,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.inventory.R
+import com.inventory.ai.VisionOutcome
 import com.inventory.cache.CacheEntry
 import com.inventory.cache.ChildCounts
 import com.inventory.storage.StorageMode
@@ -127,7 +128,8 @@ private const val MAX_GALLERY_IMAGES = 10
  * child folder, [onOpenCamera] and the gallery picker attach photos to
  * this folder, [onOpenCoverCapture] photographs a cover for the addressed
  * folder (relative-path arguments), [onOpenSearch] opens the global
- * search, [onBack] ascends (and also leaves a folder that was just
+ * search, [onOpenSettings] opens the AI auto-labeling settings (root menu
+ * only), and [onBack] ascends (and also leaves a folder that was just
  * renamed/moved/deleted — its route went stale).
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -137,6 +139,7 @@ fun ContainerScreen(
     onOpenCamera: (String) -> Unit,
     onOpenCoverCapture: (String) -> Unit,
     onOpenSearch: () -> Unit,
+    onOpenSettings: () -> Unit,
     onBack: () -> Unit,
     viewModel: ContainerViewModel = hiltViewModel(),
 ) {
@@ -145,6 +148,8 @@ fun ContainerScreen(
     val storage by viewModel.storageStatus.collectAsStateWithLifecycle()
     val pendingQueue by viewModel.pendingQueue.collectAsStateWithLifecycle()
     val pendingCover by viewModel.pendingCover.collectAsStateWithLifecycle()
+    val aiSuggestions by viewModel.aiSuggestions.collectAsStateWithLifecycle()
+    val aiEnabled by viewModel.aiEnabled.collectAsStateWithLifecycle()
     val photoMoveTargets by viewModel.photoMoveTargets.collectAsStateWithLifecycle()
     val movableTargets by viewModel.movableTargets.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -339,6 +344,7 @@ fun ContainerScreen(
                                 RootOptionsAction(
                                     onRescan = viewModel::rescanNow,
                                     onStorageMode = { showStorageDialog = true },
+                                    onSettings = onOpenSettings,
                                 )
                             } else {
                                 IconButton(
@@ -713,10 +719,12 @@ fun ContainerScreen(
     }
 
     pendingQueue.firstOrNull()?.let { head ->
-        key(head) {
+        key(head.id) {
             PendingPhotoSaveSheet(
-                imageBytes = head,
+                imageBytes = head.bytes,
                 remainingCount = pendingQueue.size - 1,
+                aiEnabled = aiEnabled,
+                suggestion = aiSuggestions[head.id],
                 onSave = { description, note ->
                     viewModel.savePendingPhoto(description, note)
                 },
@@ -921,11 +929,12 @@ private fun SearchScopeRow(
     }
 }
 
-/** App-bar overflow button for the root: rescan + the storage-mode entry point. */
+/** App-bar overflow button for the root: rescan, storage mode and AI settings. */
 @Composable
 private fun RootOptionsAction(
     onRescan: () -> Unit,
     onStorageMode: () -> Unit,
+    onSettings: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -948,6 +957,13 @@ private fun RootOptionsAction(
                 onClick = {
                     expanded = false
                     onStorageMode()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.settings_title)) },
+                onClick = {
+                    expanded = false
+                    onSettings()
                 },
             )
         }
@@ -1640,15 +1656,18 @@ private fun ContainerNameDialog(
 
 /**
  * Mandatory-metadata sheet for the head of the pending queue: preview
- * (decoded from the staged bytes), required description, optional note and
- * the remaining-images caption. Dismissing discards the whole queue, per
- * the product decision.
+ * (decoded from the staged bytes), required description, optional note,
+ * the remaining-images caption and — when AI auto-labeling is on — the
+ * suggestion status plus a blank-guarded pre-fill. Dismissing discards the
+ * whole queue, per the product decision.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun PendingPhotoSaveSheet(
     imageBytes: ByteArray,
     remainingCount: Int,
+    aiEnabled: Boolean,
+    suggestion: VisionOutcome?,
     onSave: (String, String?) -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -1657,6 +1676,15 @@ private fun PendingPhotoSaveSheet(
     var note by remember { mutableStateOf("") }
     val configuration = LocalConfiguration.current
     val maxHeight = (configuration.screenHeightDp * 0.4f).dp
+
+    // Blank-guarded pre-fill: a late AI reply never overwrites text the
+    // user already typed into either field.
+    LaunchedEffect(suggestion) {
+        val ready = suggestion as? VisionOutcome.Suggested ?: return@LaunchedEffect
+        if (description.isBlank()) description = ready.description
+        val suggestedNote = ready.note
+        if (note.isBlank() && !suggestedNote.isNullOrBlank()) note = suggestedNote
+    }
 
     ModalBottomSheet(onDismissRequest = onCancel, sheetState = sheetState) {
         Column(
@@ -1695,6 +1723,10 @@ private fun PendingPhotoSaveSheet(
                 label = { Text(stringResource(R.string.photo_note_label)) },
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (aiEnabled) {
+                Spacer(modifier = Modifier.height(8.dp))
+                AiSuggestionStatus(suggestion)
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1715,6 +1747,24 @@ private fun PendingPhotoSaveSheet(
             }
         }
     }
+}
+
+/**
+ * One-line AI status under the save dialog's fields: in-flight while no
+ * reply has arrived, ready on a suggestion, failed otherwise.
+ */
+@Composable
+private fun AiSuggestionStatus(suggestion: VisionOutcome?) {
+    val label = when (suggestion) {
+        null -> R.string.ai_suggestion_thinking
+        is VisionOutcome.Suggested -> R.string.ai_suggestion_ready
+        is VisionOutcome.Failed -> R.string.ai_suggestion_failed
+    }
+    Text(
+        text = stringResource(label),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 /**

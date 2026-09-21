@@ -3,6 +3,10 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Optional AI auto-labeling talks to a user-configured OpenAI-compatible
+         endpoint; users may point it at a plain-http local server, so cleartext
+         is permitted (see android:usesCleartextTraffic below). -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- The inventory IS a folder tree on shared storage:
          API 30+ takes the All Files Access route… -->
@@ -26,7 +30,8 @@
         android:requestLegacyExternalStorage="true"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.PhotoInventory">
+        android:theme="@style/Theme.PhotoInventory"
+        android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"
             android:exported="true">

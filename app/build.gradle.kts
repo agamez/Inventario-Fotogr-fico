@@ -85,4 +85,8 @@ dependencies {
 
     implementation(libs.coil.compose)
     implementation(libs.androidx.exifinterface)
+
+    // Required on the compile classpath because VisionClient's public
+    // constructor exposes kotlinx.serialization.json.Json (default arg).
+    implementation(libs.kotlinx.serialization.json)
 }

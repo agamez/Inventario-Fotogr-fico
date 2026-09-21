@@ -12,6 +12,7 @@ import com.inventory.feature.containers.ContainerScreen
 import com.inventory.feature.photos.CameraCaptureScreen
 import com.inventory.feature.photos.CoverCaptureScreen
 import com.inventory.feature.search.SearchScreen
+import com.inventory.feature.settings.SettingsScreen
 
 /**
  * Root navigation graph of the filesystem inventory: the browse screen is
@@ -46,8 +47,15 @@ fun InventoryNavGraph(
                 onOpenSearch = {
                     navController.navigate(Screens.Search.route)
                 },
+                onOpenSettings = {
+                    navController.navigate(Screens.Settings.route)
+                },
                 onBack = {},
             )
+        }
+
+        composable(route = Screens.Settings.route) {
+            SettingsScreen(onBack = { navController.popBackStack() })
         }
 
         composable(route = Screens.Search.route) {
@@ -79,6 +87,9 @@ fun InventoryNavGraph(
                 },
                 onOpenSearch = {
                     navController.navigate(Screens.Search.route)
+                },
+                onOpenSettings = {
+                    navController.navigate(Screens.Settings.route)
                 },
                 onBack = { navController.popBackStack() },
             )

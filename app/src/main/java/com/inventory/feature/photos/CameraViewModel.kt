@@ -5,6 +5,9 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.inventory.R
+import com.inventory.ai.VisionClient
+import com.inventory.ai.VisionOutcome
+import com.inventory.ai.VisionPrefs
 import com.inventory.storage.InventoryStore
 import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -12,9 +15,12 @@ import javax.inject.Inject
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -35,6 +41,7 @@ class CameraViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val store: InventoryStore,
     private val messageBus: UserMessageBus,
+    private val visionPrefs: VisionPrefs,
 ) : ViewModel() {
 
     /** Relative path of the folder the photo will be stored in; from the nav route. */
@@ -45,6 +52,22 @@ class CameraViewModel @Inject constructor(
     /** The captured bytes awaiting their description, or null. */
     val pending: StateFlow<ByteArray?> = _pending.asStateFlow()
 
+    private val _suggestion = MutableStateFlow<VisionOutcome?>(null)
+
+    /** AI reply for [pending], or null while none has arrived. */
+    val suggestion: StateFlow<VisionOutcome?> = _suggestion.asStateFlow()
+
+    /** True while the feature is on AND a model is configured. */
+    val aiEnabled: StateFlow<Boolean> = combine(
+        visionPrefs.enabled,
+        visionPrefs.model,
+    ) { enabled, model -> enabled && model.isNotBlank() }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = visionPrefs.isActive(),
+        )
+
     /** One-shot UI events, consumed exactly once by the screen. */
     sealed interface CameraEvent {
         data class ShowMessage(@StringRes val resId: Int) : CameraEvent
@@ -54,14 +77,27 @@ class CameraViewModel @Inject constructor(
     private val _events = Channel<CameraEvent>(Channel.BUFFERED)
     val events: Flow<CameraEvent> = _events.receiveAsFlow()
 
-    /** Keeps the fresh capture bytes verbatim, replacing any earlier pending frame. */
+    /**
+     * Keeps the fresh capture bytes verbatim, replacing any earlier pending
+     * frame, and — when AI auto-labeling is on — asks the configured model
+     * for a description/note in the background. The reply is dropped if the
+     * frame was saved or discarded before it arrived.
+     */
     fun onCaptured(bytes: ByteArray) {
         _pending.value = bytes
+        _suggestion.value = null
+        if (!visionPrefs.isActive()) return
+        val client = VisionClient(visionPrefs.config())
+        viewModelScope.launch {
+            val outcome = client.describe(bytes)
+            if (_pending.value === bytes) _suggestion.value = outcome
+        }
     }
 
     /** Throws away the pending frame. */
     fun discardPending() {
         _pending.value = null
+        _suggestion.value = null
     }
 
     /**
@@ -87,6 +123,7 @@ class CameraViewModel @Inject constructor(
             ) {
                 InventoryStore.AddOutcome.Success -> {
                     _pending.value = null
+                    _suggestion.value = null
                     messageBus.post(R.string.photo_added)
                     _events.send(CameraEvent.NavigateBack)
                 }
@@ -94,6 +131,7 @@ class CameraViewModel @Inject constructor(
                     sendEvent(R.string.error_blank_description)
                 InventoryStore.AddOutcome.InvalidImage -> {
                     _pending.value = null
+                    _suggestion.value = null
                     sendEvent(R.string.error_invalid_image)
                 }
             }

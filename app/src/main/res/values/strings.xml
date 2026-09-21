@@ -109,4 +109,19 @@
     <string name="storage_mode_changed">Storage mode changed — index rebuilt</string>
     <string name="mode_saf_label">Folder pick</string>
     <string name="mode_file_label">All files access</string>
+
+    <!-- Optional AI auto-labeling: settings + save-dialog status -->
+    <string name="settings_title">Settings</string>
+    <string name="ai_enable">AI auto-label</string>
+    <string name="ai_enable_help">When enabled, new photos are sent to the configured AI server to suggest a description and note. You can always edit them before saving.</string>
+    <string name="ai_base_url">API base URL</string>
+    <string name="ai_api_key">API key</string>
+    <string name="ai_key_hint">Stored on this device only. Leave empty for local servers.</string>
+    <string name="ai_model">Model</string>
+    <string name="ai_test_connection">Test connection</string>
+    <string name="ai_test_ok">Connection OK</string>
+    <string name="ai_test_failed">Connection failed</string>
+    <string name="ai_suggestion_thinking">Asking AI…</string>
+    <string name="ai_suggestion_ready">AI suggestion ready</string>
+    <string name="ai_suggestion_failed">AI suggestion failed</string>
 </resources>

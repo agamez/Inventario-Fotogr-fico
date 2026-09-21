@@ -32,6 +32,9 @@ sealed class Screens(val route: String) {
     /** Global search across every indexed photo. */
     data object Search : Screens(route = "search")
 
+    /** AI auto-labeling configuration (endpoint, key, model, test). */
+    data object Settings : Screens(route = "settings")
+
     companion object {
         const val ARG_PATH = "path"
 
