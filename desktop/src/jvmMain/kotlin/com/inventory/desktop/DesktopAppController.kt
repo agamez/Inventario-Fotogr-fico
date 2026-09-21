@@ -1,5 +1,8 @@
 package com.inventory.desktop
 
+import com.inventory.ai.VisionClient
+import com.inventory.ai.VisionConfig
+import com.inventory.ai.VisionOutcome
 import com.inventory.desktop.exif.DesktopExifEditor
 import com.inventory.desktop.index.DesktopIndex
 import com.inventory.desktop.index.FolderWatcher
@@ -15,6 +18,7 @@ import com.inventory.storage.parentOf
 import java.io.File
 import java.io.IOException
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -25,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -47,6 +52,8 @@ class DesktopAppController(
     val rootDir: File,
     /** The EXIF seam — injectable for tests, real on desktop. */
     private val exifEditor: ExifEditor = DesktopExifEditor(),
+    /** The persisted local config (root + AI settings); injectable for tests. */
+    private val config: DesktopConfig = DesktopConfig.default,
 ) {
 
     val backend: StorageBackend = FileBackend(root = rootDir, accessCheck = { true }, exif = exifEditor)
@@ -64,10 +71,32 @@ class DesktopAppController(
         .map { it.conflictCount }
         .stateIn(scope, SharingStarted.Eagerly, 0)
 
-    private val _pendingQueue = MutableStateFlow<List<ByteArray>>(emptyList())
+    private val _pendingQueue = MutableStateFlow<List<PendingPhoto>>(emptyList())
+
+    /**
+     * One staged import with a stable [id]: the import dialog edits the
+     * head and pops it on success, and the optional AI suggestion is keyed
+     * by the id so a reply that lands after the queue moved on is ignored.
+     * Mirrors the Android ContainerViewModel's queue item.
+     */
+    data class PendingPhoto(val id: Long, val bytes: ByteArray)
+
+    private val pendingIdCounter = AtomicLong(0)
 
     /** Staged import bytes awaiting their mandatory description (UI queue). */
-    val pendingQueue: StateFlow<List<ByteArray>> = _pendingQueue.asStateFlow()
+    val pendingQueue: StateFlow<List<PendingPhoto>> = _pendingQueue.asStateFlow()
+
+    private val _aiSuggestions = MutableStateFlow<Map<Long, VisionOutcome>>(emptyMap())
+
+    /**
+     * AI replies for queued photos, keyed by [PendingPhoto.id]. Cleared
+     * with the queue; an in-flight reply for a photo that is no longer
+     * queued is dropped before it is stored.
+     */
+    val aiSuggestions: StateFlow<Map<Long, VisionOutcome>> = _aiSuggestions.asStateFlow()
+
+    /** The persisted AI auto-label settings, observed by the settings dialog. */
+    val aiSettings: StateFlow<AiSettings> = config.aiSettings
 
     /** Result of a mutating operation, mapped to user messages by the UI. */
     sealed interface Outcome {
@@ -236,14 +265,33 @@ class DesktopAppController(
 
     // region photos
 
-    /** Queues picked import bytes (the UI prompts a description per photo). */
+    /**
+     * Queues picked import bytes (the UI prompts a description per photo)
+     * and, when AI auto-labeling is on with a model configured, asks the
+     * endpoint for a suggestion per photo in the background.
+     */
     fun queueForImport(bytes: List<ByteArray>) {
-        if (bytes.isNotEmpty()) _pendingQueue.value = bytes
+        if (bytes.isEmpty()) return
+        val photos = bytes.map { PendingPhoto(pendingIdCounter.incrementAndGet(), it) }
+        _pendingQueue.value = photos
+        _aiSuggestions.value = emptyMap()
+        val visionConfig = aiConfig() ?: return
+        val client = VisionClient(visionConfig)
+        photos.forEach { photo ->
+            scope.launch {
+                val outcome = client.describe(photo.bytes)
+                // A reply that lands after its photo left the queue is ignored.
+                if (_pendingQueue.value.any { it.id == photo.id }) {
+                    _aiSuggestions.update { it + (photo.id to outcome) }
+                }
+            }
+        }
     }
 
-    /** Drops the whole pending import queue (Cancel). */
+    /** Drops the whole pending import queue (Cancel) and its suggestions. */
     fun discardPendingImport() {
         _pendingQueue.value = emptyList()
+        _aiSuggestions.value = emptyMap()
     }
 
     /**
@@ -253,7 +301,7 @@ class DesktopAppController(
      */
     suspend fun importPendingPhoto(folderRel: String, rawDescription: String, rawNote: String?): Outcome {
         val head = _pendingQueue.value.firstOrNull() ?: return Outcome.InvalidImage
-        val outcome = importPhoto(folderRel, head, rawDescription, rawNote)
+        val outcome = importPhoto(folderRel, head.bytes, rawDescription, rawNote)
         if (outcome == Outcome.Saved || outcome == Outcome.InvalidImage) {
             _pendingQueue.value = _pendingQueue.value.drop(1)
         }
@@ -374,6 +422,45 @@ class DesktopAppController(
     /** The EXIF triple of one photo straight from disk (the edit dialog). */
     suspend fun readPhotoMeta(rel: String): com.inventory.storage.PhotoMeta? = backend.readPhotoMeta(rel)
 
+    // region ai auto-label
+
+    /**
+     * The effective vision config, or null when the feature is off or no
+     * model is configured (so callers never make a request in that state).
+     * A blank API key becomes null so the client omits the Authorization
+     * header; the base URL and model are trimmed, mirroring Android.
+     */
+    fun aiConfig(): VisionConfig? {
+        val settings = aiSettings.value
+        if (!settings.enabled || settings.model.isBlank()) return null
+        return VisionConfig(
+            baseUrl = settings.baseUrl.trim(),
+            apiKey = settings.apiKey.trim().ifBlank { null },
+            model = settings.model.trim(),
+        )
+    }
+
+    /** Persists the AI master switch (settings dialog + import gate). */
+    fun setAiEnabled(value: Boolean) = config.setAiEnabled(value)
+
+    fun setAiBaseUrl(value: String) = config.setAiBaseUrl(value)
+
+    fun setAiApiKey(value: String) = config.setAiApiKey(value)
+
+    fun setAiModel(value: String) = config.setAiModel(value)
+
+    /**
+     * Probes the configured endpoint with a text-only ping, building the
+     * client from the CURRENT field values. Returns a [VisionOutcome], so
+     * the dialog can render "Connection OK" or the key-free failure reason.
+     */
+    suspend fun testConnection(): VisionOutcome {
+        val visionConfig = aiConfig() ?: return VisionOutcome.Failed(MODEL_NOT_CONFIGURED)
+        return VisionClient(visionConfig).ping()
+    }
+
+    // endregion
+
     /** The first free "<base>.jpg" name inside [folderRel] (case-insensitive). */
     private suspend fun uniquePhotoName(
         folderRel: String,
@@ -399,5 +486,10 @@ class DesktopAppController(
     suspend fun refreshNow() {
         backend.asFileBackend().ensureRoot()
         index.rebuild()
+    }
+
+    private companion object {
+        /** Key-free reason for a "Test connection" with no model configured. */
+        const val MODEL_NOT_CONFIGURED = "model not configured"
     }
 }

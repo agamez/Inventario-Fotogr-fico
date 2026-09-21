@@ -72,7 +72,7 @@ fun main(args: Array<String>) {
         // outside composition; the (possibly null) root decides whether the
         // gate or the browser opens first.
         var controller by remember {
-            mutableStateOf(DesktopConfig.loadRoot()?.let { root ->
+            mutableStateOf(DesktopConfig.default.loadRoot()?.let { root ->
                 DesktopAppController(root).also { it.start() }
             })
         }
@@ -94,7 +94,7 @@ fun main(args: Array<String>) {
                         App(current)
                     } else {
                         FolderGate(onPicked = { path ->
-                            runCatching { DesktopConfig.saveRoot(File(path)) }
+                            runCatching { DesktopConfig.default.saveRoot(File(path)) }
                             controller = DesktopAppController(File(path)).also { it.start() }
                         })
                     }

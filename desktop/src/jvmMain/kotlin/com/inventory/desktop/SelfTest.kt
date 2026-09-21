@@ -1,8 +1,14 @@
 package com.inventory.desktop
 
+import com.inventory.ai.VisionOutcome
 import com.inventory.desktop.exif.DesktopExifEditor
+import com.sun.net.httpserver.HttpExchange
+import com.sun.net.httpserver.HttpServer
 import java.io.File
+import java.net.InetSocketAddress
 import java.util.Base64
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 
 /**
  * The scripted end-to-end check of the whole desktop stack — controller,
@@ -18,8 +24,13 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
     folder.mkdirs()
     val editor = DesktopExifEditor()
 
+    // The selftest never reads or writes the user's real config: it runs
+    // against a throwaway properties file, deleted at the end.
+    val configFile = File.createTempFile("pi-selftest", ".properties")
+    val config = DesktopConfig(configFile)
+
     // 1. Fresh controller: index the (possibly leftover) folder.
-    val controller = DesktopAppController(folder)
+    val controller = DesktopAppController(folder, config = config)
     controller.refreshNow()
     report.check("index built on empty root", controller.snapshot.value.folders == setOf(""))
 
@@ -87,7 +98,7 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
     report.check("A/C deleted", !File(folder, "A/C").exists())
 
     // 11. A FRESH index (new controller over the same folder) reconstructs the tree.
-    val rebuilt = DesktopAppController(folder)
+    val rebuilt = DesktopAppController(folder, config = config)
     rebuilt.refreshNow()
     val finalSnapshot = rebuilt.snapshot.value
     report.check(
@@ -106,9 +117,73 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
     report.check("fresh index counts for A", finalSnapshot.subtreeCounts["A"] == (0 to 1))
     report.check("fresh index counts for B renamed", finalSnapshot.subtreeCounts["B renamed"] == (0 to 1))
 
+    // 12. AI auto-label segment against an in-test loopback mock server
+    //     (fully self-contained, no external services). The controller is
+    //     reused: configure AI, stage one photo, await the suggestion,
+    //     save it, then turn AI back off and tear the mock down.
+    val mockServer = startMockAiServer()
+    controller.setAiEnabled(true)
+    controller.setAiBaseUrl("http://127.0.0.1:${mockServer.address.port}/v1")
+    controller.setAiApiKey("")
+    controller.setAiModel("mock-vision-model")
+    report.check("AI config active", controller.aiConfig() != null)
+
+    val aiFolder = controller.createFolder("", "AI")
+    report.check("AI container created", aiFolder.first == "AI", "got ${aiFolder.first}")
+
+    controller.queueForImport(listOf(syntheticJpeg()))
+    val staged = controller.pendingQueue.value.firstOrNull()
+    report.check("AI photo staged", staged != null)
+    if (staged != null) {
+        val outcome = withTimeout(AI_TIMEOUT_MS) {
+            controller.aiSuggestions.first { it.containsKey(staged.id) }[staged.id]!!
+        }
+        report.check("AI suggestion received", outcome is VisionOutcome.Suggested, "got $outcome")
+        if (outcome is VisionOutcome.Suggested) {
+            report.check("AI suggestion description", outcome.description == MOCK_AI_DESCRIPTION, "got ${outcome.description}")
+            report.check("AI suggestion note", outcome.note == MOCK_AI_NOTE, "got ${outcome.note}")
+            val saved = controller.importPendingPhoto("AI", outcome.description, outcome.note)
+            report.check("AI photo saved", saved == DesktopAppController.Outcome.Saved, "got $saved")
+            val aiFile = File(folder, "AI/$MOCK_AI_DESCRIPTION.jpg")
+            report.check("AI photo named after suggestion", aiFile.isFile)
+            val aiMeta = aiFile.takeIf { it.isFile }?.let { editor.read(it) }
+            report.check("AI photo EXIF description", aiMeta?.description == MOCK_AI_DESCRIPTION, "got ${aiMeta?.description}")
+            report.check("AI photo EXIF note", aiMeta?.note == MOCK_AI_NOTE, "got ${aiMeta?.note}")
+        }
+    }
+    controller.setAiEnabled(false)
+    report.check("AI disabled cleans the gate", controller.aiConfig() == null)
+    controller.stop()
+    mockServer.stop(0)
+    configFile.delete()
+
     report.finish()
     return report.allPassed
 }
+
+/** Starts a loopback OpenAI-compatible endpoint answering with a fixed suggestion. */
+private fun startMockAiServer(): HttpServer {
+    val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+    server.createContext(MOCK_AI_PATH) { exchange: HttpExchange ->
+        exchange.requestBody.use { it.readBytes() }
+        val bytes = MOCK_AI_RESPONSE.toByteArray(Charsets.UTF_8)
+        exchange.responseHeaders.add("Content-Type", "application/json")
+        exchange.sendResponseHeaders(200, bytes.size.toLong())
+        exchange.responseBody.use { it.write(bytes) }
+    }
+    server.start()
+    return server
+}
+
+private const val AI_TIMEOUT_MS = 15_000L
+private const val MOCK_AI_PATH = "/v1/chat/completions"
+private const val MOCK_AI_DESCRIPTION = "Mock item"
+private const val MOCK_AI_NOTE = "added by mock"
+
+/** A minimal chat-completion envelope whose content is the mock's JSON suggestion. */
+private val MOCK_AI_RESPONSE: String =
+    "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":" +
+        "\"{\\\"description\\\": \\\"$MOCK_AI_DESCRIPTION\\\", \\\"note\\\": \\\"$MOCK_AI_NOTE\\\"}\"}}]}"
 
 /** A small valid JPEG (SOI, ICC, SOF0/SOS/EOI) without any EXIF segment. */
 internal fun syntheticJpeg(): ByteArray = Base64.getDecoder().decode(SYNTHETIC_JPEG_B64)

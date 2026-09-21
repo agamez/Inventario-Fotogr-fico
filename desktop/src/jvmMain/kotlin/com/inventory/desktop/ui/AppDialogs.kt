@@ -12,12 +12,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -30,11 +34,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import com.inventory.ai.VisionOutcome
 import com.inventory.desktop.DesktopAppController
 import com.inventory.desktop.index.DesktopIndex
+import com.inventory.desktop.mergedPreFill
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -260,19 +268,32 @@ fun PhotoDetailsDialog(
 
 /**
  * One photo of an import batch: preview of the staged bytes, the
- * mandatory description, the optional note and how many are still
- * waiting; Cancel discards the whole queue (Android semantics).
+ * mandatory description, the optional note, how many are still waiting,
+ * and — when AI auto-labeling is on — a status line with a blank-guarded
+ * pre-fill from the suggestion. Cancel discards the whole queue (Android
+ * semantics).
  */
 @Composable
 fun ImportQueueDialog(
-    imageBytes: ByteArray,
+    photo: DesktopAppController.PendingPhoto,
     remaining: Int,
+    aiEnabled: Boolean,
+    suggestion: VisionOutcome?,
     onSave: (String, String?) -> Unit,
     onCancel: () -> Unit,
 ) {
-    var description by remember(imageBytes) { mutableStateOf("") }
-    var note by remember(imageBytes) { mutableStateOf("") }
-    val bitmap = remember(imageBytes) { decodeJpegBitmap(imageBytes) }
+    var description by remember(photo.id) { mutableStateOf("") }
+    var note by remember(photo.id) { mutableStateOf("") }
+    val bitmap = remember(photo.bytes) { decodeJpegBitmap(photo.bytes) }
+
+    // Blank-guarded pre-fill: a late AI reply never overwrites text the
+    // user already typed into either field (the rule lives in mergedPreFill).
+    LaunchedEffect(photo.id, suggestion) {
+        val merged = mergedPreFill(description, note, suggestion)
+        description = merged.description
+        note = merged.note
+    }
+
     AlertDialog(
         onDismissRequest = onCancel,
         title = { Text(DesktopStrings.IMPORT_TITLE) },
@@ -310,6 +331,10 @@ fun ImportQueueDialog(
                     label = { Text(DesktopStrings.NOTE_LABEL) },
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (aiEnabled) {
+                    Spacer(Modifier.height(8.dp))
+                    AiSuggestionStatus(suggestion)
+                }
             }
         },
         confirmButton = {
@@ -320,6 +345,132 @@ fun ImportQueueDialog(
         },
         dismissButton = {
             TextButton(onClick = onCancel) { Text(DesktopStrings.CANCEL) }
+        },
+    )
+}
+
+/**
+ * One-line AI status under the import fields: in-flight while no reply has
+ * arrived, ready on a suggestion, failed otherwise (Android wording).
+ */
+@Composable
+private fun AiSuggestionStatus(suggestion: VisionOutcome?) {
+    val label = when (suggestion) {
+        null -> DesktopStrings.AI_SUGGESTION_THINKING
+        is VisionOutcome.Suggested -> DesktopStrings.AI_SUGGESTION_READY
+        is VisionOutcome.Failed -> DesktopStrings.AI_SUGGESTION_FAILED
+    }
+    Text(
+        text = label,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+/**
+ * The AI auto-label settings: master switch, endpoint/key/model fields
+ * (disabled while the switch is off) and a "Test connection" probe that
+ * shows its result inline. Edits persist immediately, like Android.
+ */
+@Composable
+fun SettingsDialog(
+    controller: DesktopAppController,
+    onDismiss: () -> Unit,
+) {
+    val settings by controller.aiSettings.collectAsState()
+    val scope = rememberCoroutineScope()
+    var testing by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<String?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(DesktopStrings.SETTINGS_TITLE) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(DesktopStrings.AI_ENABLE, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            DesktopStrings.AI_ENABLE_HELP,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = settings.enabled,
+                        onCheckedChange = { controller.setAiEnabled(it) },
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = settings.baseUrl,
+                    onValueChange = { controller.setAiBaseUrl(it) },
+                    enabled = settings.enabled,
+                    label = { Text(DesktopStrings.AI_BASE_URL) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = settings.apiKey,
+                    onValueChange = { controller.setAiApiKey(it) },
+                    enabled = settings.enabled,
+                    label = { Text(DesktopStrings.AI_API_KEY) },
+                    supportingText = { Text(DesktopStrings.AI_KEY_HINT) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = settings.model,
+                    onValueChange = { controller.setAiModel(it) },
+                    enabled = settings.enabled,
+                    label = { Text(DesktopStrings.AI_MODEL) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    OutlinedButton(
+                        enabled = settings.enabled && !testing,
+                        onClick = {
+                            testing = true
+                            testResult = null
+                            scope.launch {
+                                testResult = when (val outcome = controller.testConnection()) {
+                                    is VisionOutcome.Suggested -> DesktopStrings.AI_TEST_OK
+                                    is VisionOutcome.Failed ->
+                                        DesktopStrings.AI_TEST_FAILED +
+                                            outcome.reason.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+                                }
+                                testing = false
+                            }
+                        },
+                    ) { Text(DesktopStrings.AI_TEST_CONNECTION) }
+                    if (testing) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    }
+                }
+                testResult?.let { result ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        text = result,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(DesktopStrings.CLOSE) }
         },
     )
 }

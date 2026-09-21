@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
@@ -78,10 +79,13 @@ fun App(controller: DesktopAppController) {
     val scanning by controller.scanning.collectAsState()
     val conflictCount by controller.conflictCount.collectAsState()
     val pendingQueue by controller.pendingQueue.collectAsState()
+    val aiSettings by controller.aiSettings.collectAsState()
+    val aiSuggestions by controller.aiSuggestions.collectAsState()
     val scope = rememberCoroutineScope()
 
     var selectedFolder by remember { mutableStateOf<String?>(null) }
     var showGlobalSearch by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
     var globalQuery by remember { mutableStateOf("") }
     var browseQuery by remember { mutableStateOf("") }
     var includeSubtree by remember { mutableStateOf(false) }
@@ -126,6 +130,7 @@ fun App(controller: DesktopAppController) {
                 showGlobalSearch = !showGlobalSearch
                 browseQuery = ""
             },
+            onOpenSettings = { showSettings = true },
         )
         ActionBar(
             folderRel = folderRel,
@@ -339,8 +344,10 @@ fun App(controller: DesktopAppController) {
 
     pendingQueue.firstOrNull()?.let { head ->
         ImportQueueDialog(
-            imageBytes = head,
+            photo = head,
             remaining = pendingQueue.size - 1,
+            aiEnabled = aiSettings.enabled && aiSettings.model.isNotBlank(),
+            suggestion = aiSuggestions[head.id],
             onSave = { description, note ->
                 scope.launch {
                     val outcome = controller.importPendingPhoto(folderRel, description, note)
@@ -362,10 +369,17 @@ fun App(controller: DesktopAppController) {
         )
     }
 
+    if (showSettings) {
+        SettingsDialog(
+            controller = controller,
+            onDismiss = { showSettings = false },
+        )
+    }
+
     // endregion
 }
 
-/** The app bar: path title + breadcrumb, rescan and global-search toggle. */
+/** The app bar: path title + breadcrumb, rescan, global-search toggle and settings. */
 @Composable
 private fun TopBar(
     folderRel: String,
@@ -373,6 +387,7 @@ private fun TopBar(
     showGlobalSearch: Boolean,
     onRescan: () -> Unit,
     onToggleSearch: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     Surface(tonalElevation = 2.dp) {
         Row(
@@ -417,6 +432,9 @@ private fun TopBar(
                     imageVector = if (showGlobalSearch) Icons.Filled.Close else Icons.Filled.Search,
                     contentDescription = DesktopStrings.SEARCH,
                 )
+            }
+            IconButton(onClick = onOpenSettings) {
+                Icon(Icons.Filled.Settings, contentDescription = DesktopStrings.SETTINGS)
             }
         }
     }

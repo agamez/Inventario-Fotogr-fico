@@ -18,6 +18,7 @@ object DesktopStrings {
     const val CLOSE_SEARCH = "Close search"
     const val IMPORT_PHOTOS = "Import photos"
     const val ADD_CONTAINER = "Add container"
+    const val SETTINGS = "Settings"
 
     // Sections & rows
     const val CONTAINERS_SECTION = "Containers"
@@ -71,6 +72,23 @@ object DesktopStrings {
     const val IMPORT_TITLE = "Import photo"
     const val N_MORE_WAITING = "%d more waiting"
     const val DESCRIPTION_REQUIRED = "Description is required"
+
+    // Settings dialog (AI auto-label) — wording mirrors Android's ai_* resources
+    const val SETTINGS_TITLE = "Settings"
+    const val AI_ENABLE = "AI auto-label"
+    const val AI_ENABLE_HELP =
+        "When enabled, new photos are sent to the configured AI server to suggest a description and note. " +
+            "You can always edit them before saving."
+    const val AI_BASE_URL = "API base URL"
+    const val AI_API_KEY = "API key"
+    const val AI_KEY_HINT = "Stored in this app's config file. Leave empty for local servers."
+    const val AI_MODEL = "Model"
+    const val AI_TEST_CONNECTION = "Test connection"
+    const val AI_TEST_OK = "Connection OK"
+    const val AI_TEST_FAILED = "Connection failed"
+    const val AI_SUGGESTION_THINKING = "Asking AI…"
+    const val AI_SUGGESTION_READY = "AI suggestion ready"
+    const val AI_SUGGESTION_FAILED = "AI suggestion failed"
 
     // Delete confirmations
     const val DELETE_CONTAINER_TITLE = "Delete container?"

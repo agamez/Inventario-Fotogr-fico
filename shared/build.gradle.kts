@@ -14,7 +14,10 @@ kotlin {
         val commonMain by getting {
             dependencies {
                 implementation(libs.kotlinx.coroutines.core)
-                implementation(libs.kotlinx.serialization.json)
+                // `api` so JVM consumers (desktop) that use :shared's public
+                // VisionClient surface get kotlinx-serialization on their
+                // compile classpath too, not just at runtime.
+                api(libs.kotlinx.serialization.json)
             }
         }
         val jvmTest by getting {
