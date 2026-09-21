@@ -23,8 +23,13 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 
-/** Everything a request needs: endpoint root, optional bearer key and model name. */
-data class VisionConfig(val baseUrl: String, val apiKey: String?, val model: String)
+/** Everything a request needs: endpoint root, optional bearer key, model name and output language. */
+data class VisionConfig(
+    val baseUrl: String,
+    val apiKey: String?,
+    val model: String,
+    val outputLanguage: String? = null,
+)
 
 /**
  * Result of one vision call. [Failed.reason] is human-readable and NEVER
@@ -74,7 +79,7 @@ class VisionClient(
                     putJsonArray("content") {
                         addJsonObject {
                             put("type", "text")
-                            put("text", PROMPT)
+                            put("text", promptText())
                         }
                         addJsonObject {
                             put("type", "image_url")
@@ -101,6 +106,15 @@ class VisionClient(
             }
             is RawResult.Error -> VisionOutcome.Failed(raw.reason)
         }
+    }
+
+    /**
+     * [PROMPT] plus, when [VisionConfig.outputLanguage] is non-blank, one
+     * sentence that asks for the description and note in that language.
+     */
+    private fun promptText(): String {
+        val language = config.outputLanguage?.trim()
+        return if (language.isNullOrEmpty()) PROMPT else "$PROMPT Write the description and note in $language."
     }
 
     /**

@@ -127,6 +127,16 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
 
+            OutlinedTextField(
+                value = state.outputLanguage,
+                onValueChange = viewModel::setOutputLanguage,
+                enabled = state.enabled,
+                label = { Text(stringResource(R.string.ai_output_language)) },
+                supportingText = { Text(stringResource(R.string.ai_output_language_hint)) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp),

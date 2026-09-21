@@ -118,6 +118,8 @@
     <string name="ai_api_key">API key</string>
     <string name="ai_key_hint">Stored on this device only. Leave empty for local servers.</string>
     <string name="ai_model">Model</string>
+    <string name="ai_output_language">Output language</string>
+    <string name="ai_output_language_hint">System default</string>
     <string name="ai_test_connection">Test connection</string>
     <string name="ai_test_ok">Connection OK</string>
     <string name="ai_test_failed">Connection failed</string>

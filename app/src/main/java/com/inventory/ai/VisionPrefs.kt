@@ -2,6 +2,7 @@ package com.inventory.ai
 
 import android.content.Context
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +45,11 @@ class VisionPrefs @Inject constructor(@ApplicationContext context: Context) {
     /** Vision model name, e.g. `gpt-4o-mini`. */
     val model: StateFlow<String> = _model.asStateFlow()
 
+    private val _outputLanguage = MutableStateFlow(prefs.getString(KEY_OUTPUT_LANGUAGE, null) ?: "")
+
+    /** Requested output language; blank means the system language (resolved at request time). */
+    val outputLanguage: StateFlow<String> = _outputLanguage.asStateFlow()
+
     fun setEnabled(value: Boolean) {
         prefs.edit().putBoolean(KEY_ENABLED, value).apply()
         _enabled.value = value
@@ -64,27 +70,43 @@ class VisionPrefs @Inject constructor(@ApplicationContext context: Context) {
         _model.value = value
     }
 
+    fun setOutputLanguage(value: String) {
+        prefs.edit().putString(KEY_OUTPUT_LANGUAGE, value).apply()
+        _outputLanguage.value = value
+    }
+
     /**
      * Immutable snapshot for one request. A blank API key becomes null so
      * the client omits the Authorization header entirely; the base URL and
-     * model are trimmed.
+     * model are trimmed. A blank output language resolves to the system
+     * locale's display language.
      */
     fun config(): VisionConfig = VisionConfig(
         baseUrl = _baseUrl.value.trim(),
         apiKey = _apiKey.value.trim().ifBlank { null },
         model = _model.value.trim(),
+        outputLanguage = resolvedOutputLanguage(_outputLanguage.value),
     )
 
     /** True when the feature is on AND a model is configured (so calls can be made). */
     fun isActive(): Boolean = _enabled.value && _model.value.isNotBlank()
 
-    private companion object {
-        const val PREFS_NAME = "vision_prefs"
-        const val KEY_ENABLED = "enabled"
-        const val KEY_BASE_URL = "base_url"
-        const val KEY_API_KEY = "api_key"
-        const val KEY_MODEL = "model"
-        const val DEFAULT_ENABLED = false
-        const val DEFAULT_BASE_URL = "https://api.openai.com/v1"
+    companion object {
+        /**
+         * The language to instruct the model with: the trimmed user value,
+         * or the system locale's display language (named in English) when
+         * the value is blank.
+         */
+        fun resolvedOutputLanguage(raw: String): String? =
+            raw.trim().ifEmpty { Locale.getDefault().getDisplayLanguage(Locale.ENGLISH) }
+
+        private const val PREFS_NAME = "vision_prefs"
+        private const val KEY_ENABLED = "enabled"
+        private const val KEY_BASE_URL = "base_url"
+        private const val KEY_API_KEY = "api_key"
+        private const val KEY_MODEL = "model"
+        private const val KEY_OUTPUT_LANGUAGE = "output_language"
+        private const val DEFAULT_ENABLED = false
+        private const val DEFAULT_BASE_URL = "https://api.openai.com/v1"
     }
 }

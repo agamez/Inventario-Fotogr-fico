@@ -18,6 +18,7 @@ data class AiSettings(
     val baseUrl: String = DEFAULT_BASE_URL,
     val apiKey: String = "",
     val model: String = "",
+    val outputLanguage: String = "",
 ) {
     companion object {
         const val DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -78,6 +79,7 @@ class DesktopConfig(
                 ?: AiSettings.DEFAULT_BASE_URL,
             apiKey = properties.getProperty(KEY_AI_API_KEY) ?: "",
             model = properties.getProperty(KEY_AI_MODEL) ?: "",
+            outputLanguage = properties.getProperty(KEY_AI_OUTPUT_LANGUAGE) ?: "",
         )
     }
 
@@ -89,7 +91,9 @@ class DesktopConfig(
 
     fun setAiModel(value: String) = persistAi { it.copy(model = value) }
 
-    /** Writes the full AI snapshot (all four keys) and updates the flow. */
+    fun setAiOutputLanguage(value: String) = persistAi { it.copy(outputLanguage = value) }
+
+    /** Writes the full AI snapshot (all five keys) and updates the flow. */
     private fun persistAi(transform: (AiSettings) -> AiSettings) {
         val next = transform(_aiSettings.value)
         val properties = readProperties() ?: Properties()
@@ -97,6 +101,7 @@ class DesktopConfig(
         properties.setProperty(KEY_AI_BASE_URL, next.baseUrl)
         properties.setProperty(KEY_AI_API_KEY, next.apiKey)
         properties.setProperty(KEY_AI_MODEL, next.model)
+        properties.setProperty(KEY_AI_OUTPUT_LANGUAGE, next.outputLanguage)
         write(properties)
         _aiSettings.value = next
     }
@@ -123,6 +128,7 @@ class DesktopConfig(
         private const val KEY_AI_BASE_URL = "aiBaseUrl"
         private const val KEY_AI_API_KEY = "aiApiKey"
         private const val KEY_AI_MODEL = "aiModel"
+        private const val KEY_AI_OUTPUT_LANGUAGE = "aiOutputLanguage"
         private const val CONFIG_DIR_PROPERTY = "user.home"
         private const val CONFIG_SUBDIR = ".config/photoinventory"
         private const val CONFIG_FILE_NAME = "config.properties"

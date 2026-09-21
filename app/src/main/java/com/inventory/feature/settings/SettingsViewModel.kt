@@ -37,6 +37,7 @@ class SettingsViewModel @Inject constructor(
         val baseUrl: String = "",
         val apiKey: String = "",
         val model: String = "",
+        val outputLanguage: String = "",
         val testing: Boolean = false,
         val testResult: String? = null,
     )
@@ -49,8 +50,9 @@ class SettingsViewModel @Inject constructor(
         prefs.baseUrl,
         prefs.apiKey,
         prefs.model,
-    ) { enabled, baseUrl, apiKey, model ->
-        Fields(enabled, baseUrl, apiKey, model)
+        prefs.outputLanguage,
+    ) { enabled, baseUrl, apiKey, model, outputLanguage ->
+        Fields(enabled, baseUrl, apiKey, model, outputLanguage)
     }
 
     private val status = combine(_testing, _testResult) { testing, result ->
@@ -63,6 +65,7 @@ class SettingsViewModel @Inject constructor(
             baseUrl = current.baseUrl,
             apiKey = current.apiKey,
             model = current.model,
+            outputLanguage = current.outputLanguage,
             testing = testing,
             testResult = result,
         )
@@ -74,6 +77,7 @@ class SettingsViewModel @Inject constructor(
             baseUrl = prefs.baseUrl.value,
             apiKey = prefs.apiKey.value,
             model = prefs.model.value,
+            outputLanguage = prefs.outputLanguage.value,
         ),
     )
 
@@ -84,6 +88,8 @@ class SettingsViewModel @Inject constructor(
     fun setApiKey(value: String) = prefs.setApiKey(value)
 
     fun setModel(value: String) = prefs.setModel(value)
+
+    fun setOutputLanguage(value: String) = prefs.setOutputLanguage(value)
 
     /** Probes the configured endpoint; no-op while a probe is already in flight. */
     fun testConnection() {
@@ -112,5 +118,6 @@ class SettingsViewModel @Inject constructor(
         val baseUrl: String,
         val apiKey: String,
         val model: String,
+        val outputLanguage: String,
     )
 }

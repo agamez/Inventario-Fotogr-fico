@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer
 import java.io.File
 import java.net.InetSocketAddress
 import java.nio.file.Files
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -177,6 +178,24 @@ class DesktopAiLabelTest {
         assertTrue(reloaded.enabled)
         assertEquals("gpt-4o-mini", reloaded.model)
         assertEquals("http://127.0.0.1:9/v1", reloaded.baseUrl)
+    }
+
+    @Test
+    fun outputLanguagePersistsAndResolvesToTheSystemLocale() = runBlocking {
+        val (app, _, configFile) = aiController()
+        app.setAiEnabled(true)
+        app.setAiModel("gpt-4o-mini")
+
+        app.setAiOutputLanguage("Español")
+        assertEquals("Español", app.aiConfig()?.outputLanguage)
+        assertEquals("Español", DesktopConfig(configFile).loadAiSettings().outputLanguage)
+
+        // A blank value resolves to the system locale's display language.
+        app.setAiOutputLanguage("")
+        assertEquals(
+            Locale.getDefault().getDisplayLanguage(Locale.ENGLISH),
+            app.aiConfig()?.outputLanguage,
+        )
     }
 
     @Test

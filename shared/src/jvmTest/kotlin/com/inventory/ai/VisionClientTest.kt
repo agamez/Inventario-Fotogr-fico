@@ -88,6 +88,61 @@ class VisionClientTest {
     }
 
     @Test
+    fun describeAppendsRequestedOutputLanguage() = runTest {
+        val suggestionJson = "{\"description\": \"Red toolbox\", \"note\": \"rusty handle\"}"
+        withServer(responseBody = chatCompletion(suggestionJson)) { server ->
+            val client = VisionClient(
+                VisionConfig(
+                    baseUrl = server.baseUrl(),
+                    apiKey = TEST_KEY,
+                    model = TEST_MODEL,
+                    outputLanguage = "Spanish",
+                ),
+            )
+            client.describe(byteArrayOf(1, 2, 3, 4))
+
+            assertTrue(
+                server.requestBody.contains("Write the description and note in Spanish."),
+                "request carries the output-language instruction",
+            )
+        }
+    }
+
+    @Test
+    fun describeTrimsTheRequestedOutputLanguage() = runTest {
+        val suggestionJson = "{\"description\": \"Red toolbox\", \"note\": \"rusty handle\"}"
+        withServer(responseBody = chatCompletion(suggestionJson)) { server ->
+            val client = VisionClient(
+                VisionConfig(
+                    baseUrl = server.baseUrl(),
+                    apiKey = TEST_KEY,
+                    model = TEST_MODEL,
+                    outputLanguage = "  Deutsch  ",
+                ),
+            )
+            client.describe(byteArrayOf(1, 2, 3, 4))
+
+            assertTrue(
+                server.requestBody.contains("Write the description and note in Deutsch."),
+                "the language is trimmed before it is embedded",
+            )
+        }
+    }
+
+    @Test
+    fun describeOmitsOutputLanguageInstructionWhenNull() = runTest {
+        val suggestionJson = "{\"description\": \"Red toolbox\", \"note\": \"rusty handle\"}"
+        withServer(responseBody = chatCompletion(suggestionJson)) { server ->
+            client(server).describe(byteArrayOf(1, 2, 3, 4))
+
+            assertFalse(
+                server.requestBody.contains("Write the description and note in"),
+                "no output-language instruction without a language",
+            )
+        }
+    }
+
+    @Test
     fun describeAcceptsMarkdownFencedReply() = runTest {
         val fenced = "```json\n{\"description\": \"Red toolbox\", \"note\": \"rusty handle\"}\n```"
         withServer(responseBody = chatCompletion(fenced)) { server ->

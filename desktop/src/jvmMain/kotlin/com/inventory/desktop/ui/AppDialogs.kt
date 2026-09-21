@@ -437,6 +437,16 @@ fun SettingsDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = settings.outputLanguage,
+                    onValueChange = { controller.setAiOutputLanguage(it) },
+                    enabled = settings.enabled,
+                    label = { Text(DesktopStrings.OUTPUT_LANGUAGE) },
+                    supportingText = { Text(DesktopStrings.OUTPUT_LANGUAGE_HINT) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
                 Spacer(Modifier.height(12.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     OutlinedButton(

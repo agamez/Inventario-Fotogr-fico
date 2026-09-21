@@ -437,6 +437,7 @@ class DesktopAppController(
             baseUrl = settings.baseUrl.trim(),
             apiKey = settings.apiKey.trim().ifBlank { null },
             model = settings.model.trim(),
+            outputLanguage = resolvedOutputLanguage(settings.outputLanguage),
         )
     }
 
@@ -448,6 +449,8 @@ class DesktopAppController(
     fun setAiApiKey(value: String) = config.setAiApiKey(value)
 
     fun setAiModel(value: String) = config.setAiModel(value)
+
+    fun setAiOutputLanguage(value: String) = config.setAiOutputLanguage(value)
 
     /**
      * Probes the configured endpoint with a text-only ping, building the
@@ -491,5 +494,13 @@ class DesktopAppController(
     private companion object {
         /** Key-free reason for a "Test connection" with no model configured. */
         const val MODEL_NOT_CONFIGURED = "model not configured"
+
+        /**
+         * The language to instruct the model with: the trimmed user value,
+         * or the system locale's display language (named in English) when
+         * the value is blank.
+         */
+        fun resolvedOutputLanguage(raw: String): String? =
+            raw.trim().ifEmpty { Locale.getDefault().getDisplayLanguage(Locale.ENGLISH) }
     }
 }

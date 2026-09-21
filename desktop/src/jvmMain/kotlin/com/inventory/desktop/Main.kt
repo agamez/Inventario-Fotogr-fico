@@ -50,9 +50,9 @@ private val windowIconPainter: Painter? by lazy {
  * The desktop entry point. With `--headless-selftest <folder>` it runs
  * the scripted end-to-end scenario against that folder and exits 0/1 —
  * the verification path that needs no display. With
- * `--ai-test <baseUrl> <apiKey> <model> [imagePath]` it exercises the
- * shared AI client against a live OpenAI-compatible server and exits
- * 0/1. Otherwise it opens the
+ * `--ai-test <baseUrl> <apiKey> <model> [imagePath] [language]` it
+ * exercises the shared AI client against a live OpenAI-compatible server
+ * and exits 0/1. Otherwise it opens the
  * 1100x750 window: it loads the saved root from [DesktopConfig], shows
  * the folder gate when none is usable, and otherwise builds the
  * [DesktopAppController] (watcher + initial index rebuild) and hands it
@@ -114,21 +114,28 @@ fun main(args: Array<String>) {
 }
 
 /**
- * `--ai-test <baseUrl> <apiKey> <model> [imagePath]` — validates a live
- * OpenAI-compatible AI configuration through the shared [VisionClient]:
- * always [VisionClient.ping], plus [VisionClient.describe] when an image
- * path is given. Prints one human-readable line per check and returns the
+ * `--ai-test <baseUrl> <apiKey> <model> [imagePath] [language]` — validates
+ * a live OpenAI-compatible AI configuration through the shared
+ * [VisionClient]: always [VisionClient.ping], plus [VisionClient.describe]
+ * when an image path is given. The optional trailing `language` is passed
+ * as [VisionConfig.outputLanguage], so a call can be tested in a specific
+ * output language. Prints one human-readable line per check and returns the
  * process exit code (0 when every requested check succeeded, 1 otherwise).
  * The API key is sent as a bearer token but never printed; [arguments]
  * carries the raw CLI values with the flag already removed.
  */
 private fun runAiTest(arguments: List<String>): Int {
-    if (arguments.size !in 3..4) {
-        System.err.println("usage: --ai-test <baseUrl> <apiKey> <model> [imagePath]")
+    if (arguments.size !in 3..5) {
+        System.err.println("usage: --ai-test <baseUrl> <apiKey> <model> [imagePath] [language]")
         return 1
     }
     val client = VisionClient(
-        VisionConfig(baseUrl = arguments[0], apiKey = arguments[1], model = arguments[2]),
+        VisionConfig(
+            baseUrl = arguments[0],
+            apiKey = arguments[1],
+            model = arguments[2],
+            outputLanguage = arguments.getOrNull(4),
+        ),
     )
     var allPassed = true
 

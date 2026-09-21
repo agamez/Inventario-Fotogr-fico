@@ -83,6 +83,8 @@ object DesktopStrings {
     const val AI_API_KEY = "API key"
     const val AI_KEY_HINT = "Stored in this app's config file. Leave empty for local servers."
     const val AI_MODEL = "Model"
+    const val OUTPUT_LANGUAGE = "Output language"
+    const val OUTPUT_LANGUAGE_HINT = "System default"
     const val AI_TEST_CONNECTION = "Test connection"
     const val AI_TEST_OK = "Connection OK"
     const val AI_TEST_FAILED = "Connection failed"
