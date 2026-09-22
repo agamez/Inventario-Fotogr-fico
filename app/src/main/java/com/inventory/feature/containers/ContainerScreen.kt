@@ -10,6 +10,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -85,6 +86,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -103,6 +105,8 @@ import com.inventory.R
 import com.inventory.ai.VisionOutcome
 import com.inventory.cache.CacheEntry
 import com.inventory.cache.ChildCounts
+import com.inventory.feature.containers.drag.DragController
+import com.inventory.feature.containers.drag.DragPayload
 import com.inventory.storage.StorageMode
 import com.inventory.ui.rememberBackendModel
 import com.inventory.ui.rememberPreviewBitmap
@@ -141,6 +145,7 @@ fun ContainerScreen(
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onBack: () -> Unit,
+    dragController: DragController = remember { DragController() },
     viewModel: ContainerViewModel = hiltViewModel(),
 ) {
     val isRoot = viewModel.isRoot
@@ -525,6 +530,7 @@ fun ContainerScreen(
                                                 }
                                             },
                                             onLongClick = { viewModel.enterSelectionMode(photo.relPath) },
+                                            dragController = dragController,
                                         )
                                     }
                                 } else if (uiState.searchQuery.isNotBlank()) {
@@ -1454,11 +1460,40 @@ private fun PhotoTile(
     photoLoader: suspend (String) -> Any?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    dragController: DragController,
 ) {
+    // A long press that turns into a drag must not also enter selection mode.
+    var dragJustEnded by remember { mutableStateOf(false) }
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = { if (!dragJustEnded) onLongClick() },
+            )
+            .pointerInput(photo.relPath) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { offset ->
+                        dragJustEnded = true
+                        dragController.start(
+                            DragPayload(
+                                relPaths = listOf(photo.relPath),
+                                label = photo.description ?: photo.name,
+                            ),
+                        )
+                        dragController.pointer = offset
+                    },
+                    onDrag = { change, _ -> dragController.pointer = change.position },
+                    onDragEnd = {
+                        dragController.end()
+                        dragJustEnded = false
+                    },
+                    onDragCancel = {
+                        dragController.end()
+                        dragJustEnded = false
+                    },
+                )
+            }
             .then(
                 if (selected) {
                     Modifier.border(
