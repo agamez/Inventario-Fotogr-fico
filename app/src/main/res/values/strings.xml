@@ -64,6 +64,7 @@
     <string name="photo_deleted">Photo deleted</string>
     <string name="photo_saved">Photo saved</string>
     <string name="photos_moved">%1$d photo(s) moved</string>
+    <string name="drag_count">%1$d items</string>
     <string name="error_blank_description">Description cannot be blank</string>
     <string name="error_invalid_image">This image could not be processed. Try another one.</string>
     <string name="error_camera">The camera could not capture a photo. Please try again.</string>

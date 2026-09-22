@@ -12,6 +12,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +31,8 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -49,6 +53,7 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -83,7 +88,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -98,6 +105,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -128,6 +136,38 @@ private const val MAX_GALLERY_IMAGES = 10
 
 /** Dwell on a hovered row / the "↑" chip before the drag springs the screen. */
 private const val SPRING_LOAD_DWELL_MS = 800L
+
+/** Drop-target id prefix of the ancestor chips under the top bar. */
+private const val ANCESTOR_TARGET_PREFIX = "ancestor:"
+
+/** Pointer distance from a grid edge that starts the drag auto-scroll. */
+private const val AUTO_SCROLL_EDGE_DP = 64f
+
+/** Auto-scroll speed at the very edge and at [AUTO_SCROLL_EDGE_DP] away (dp/frame). */
+private const val AUTO_SCROLL_MIN_DP = 8f
+private const val AUTO_SCROLL_MAX_DP = 30f
+
+/**
+ * Ancestor relative paths of [folderRel], root first (`""`), excluding the
+ * folder itself. Empty when [folderRel] is already the root.
+ */
+private fun ancestorPaths(folderRel: String): List<String> {
+    if (folderRel.isEmpty()) return emptyList()
+    val segments = folderRel.split('/')
+    val paths = mutableListOf("")
+    var prefix = ""
+    for (index in 0 until segments.lastIndex) {
+        prefix = if (prefix.isEmpty()) segments[index] else "$prefix/${segments[index]}"
+        paths += prefix
+    }
+    return paths
+}
+
+/** Auto-scroll speed for [distance] to an edge: max at 0, min at [edge]. */
+private fun autoScrollSpeed(min: Float, max: Float, edge: Float, distance: Float): Float {
+    val closeness = (1f - distance / edge).coerceIn(0f, 1f)
+    return min + (max - min) * closeness
+}
 
 /**
  * Ascends one level from [folderRel]: opens the parent container, or the
@@ -209,6 +249,10 @@ fun ContainerScreen(
     var showCoverSheet by remember { mutableStateOf(false) }
     var coverTargetRel by remember { mutableStateOf<String?>(null) }
     var upChipBounds by remember { mutableStateOf<Rect?>(null) }
+    var gridBounds by remember { mutableStateOf<Rect?>(null) }
+
+    val gridState = rememberLazyGridState()
+    val density = LocalDensity.current
 
     val galleryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_GALLERY_IMAGES),
@@ -275,6 +319,8 @@ fun ContainerScreen(
     LaunchedEffect(dragController.hoveredTarget) {
         val hovered = dragController.hoveredTarget ?: return@LaunchedEffect
         if (hovered == dragOwner) return@LaunchedEffect
+        // Ancestor chips are drop-only: hovering one must never navigate.
+        if (hovered.startsWith(ANCESTOR_TARGET_PREFIX)) return@LaunchedEffect
         delay(SPRING_LOAD_DWELL_MS)
         if (dragController.hoveredTarget == hovered) onOpenContainer(hovered)
     }
@@ -292,14 +338,48 @@ fun ContainerScreen(
         if (pointerOverUpChip) navigateToParent(folderRel, onOpenContainer, onBack)
     }
 
-    // Drop resolution: the row under the pointer wins, releasing anywhere
-    // else cancels. The snackbar comes from the ViewModel event.
+    // Ancestor drop chips: shown under the top bar for the whole drag when
+    // the current folder is not the root. They are drop-only.
+    val ancestorChipsVisible = dragController.payload != null && !isRoot
+
+    // Drop resolution: the row (or ancestor chip) under the pointer wins,
+    // releasing anywhere else cancels. The snackbar comes from the ViewModel.
     SideEffect {
         dragController.onDrop = { payload, target ->
-            if (target != null) {
+            // Ancestor chips carry an "ancestor:" prefix; the rest of the id
+            // is the destination's relative path ("" = root).
+            val destination = target?.removePrefix(ANCESTOR_TARGET_PREFIX)
+            if (destination != null) {
                 hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                viewModel.movePhotosTo(payload.relPaths, target)
+                viewModel.movePhotosTo(payload.relPaths, destination)
             }
+        }
+    }
+
+    // Drag-time auto-scroll: while the pointer hugs the grid's top or bottom
+    // edge, keep scrolling the single LazyVerticalGrid (children and photos
+    // share it) so a drop target further down/up can be reached. The speed
+    // ramps from 8 to 30 dp/frame as the pointer approaches the very edge.
+    LaunchedEffect(gridState, gridBounds, dragController.payload != null) {
+        val bounds = gridBounds ?: return@LaunchedEffect
+        val edge = with(density) { AUTO_SCROLL_EDGE_DP.dp.toPx() }
+        val minSpeed = with(density) { AUTO_SCROLL_MIN_DP.dp.toPx() }
+        val maxSpeed = with(density) { AUTO_SCROLL_MAX_DP.dp.toPx() }
+        while (dragController.payload != null) {
+            val point = dragController.pointer
+            if (point != null && point.x in bounds.left..bounds.right) {
+                val fromTop = point.y - bounds.top
+                val fromBottom = bounds.bottom - point.y
+                val speed = when {
+                    fromTop < edge ->
+                        -autoScrollSpeed(minSpeed, maxSpeed, edge, fromTop)
+                    fromBottom < edge ->
+                        autoScrollSpeed(minSpeed, maxSpeed, edge, fromBottom)
+                    else -> 0f
+                }
+                if (speed != 0f) gridState.scrollBy(speed)
+            }
+            withFrameNanos { }
         }
     }
 
@@ -510,6 +590,13 @@ fun ContainerScreen(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
                 }
+                if (ancestorChipsVisible) {
+                    AncestorChipsRow(
+                        folderRel = folderRel,
+                        hoveredTarget = dragController.hoveredTarget,
+                        onRegister = { id, rect -> dragController.registerTarget(dragOwner, id, rect) },
+                    )
+                }
                 if (upChipVisible) {
                     MoveUpChip(
                         contentDescription = stringResource(R.string.move_up_here),
@@ -575,7 +662,10 @@ fun ContainerScreen(
                     else -> {
                         LazyVerticalGrid(
                             columns = GridCells.Fixed(2),
-                            modifier = Modifier.fillMaxSize(),
+                            state = gridState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .onGloballyPositioned { gridBounds = it.boundsInRoot() },
                             contentPadding = PaddingValues(2.dp),
                             horizontalArrangement = Arrangement.spacedBy(2.dp),
                             verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -636,6 +726,7 @@ fun ContainerScreen(
                                             photo = photo,
                                             selectionMode = uiState.selectionMode,
                                             selected = photo.relPath in uiState.selectedPaths,
+                                            selectedPaths = uiState.selectedPaths,
                                             photoLoader = viewModel::photoModel,
                                             onClick = {
                                                 if (uiState.selectionMode) {
@@ -644,7 +735,15 @@ fun ContainerScreen(
                                                     fullScreenPhotoRel = photo.relPath
                                                 }
                                             },
-                                            onLongClick = { viewModel.enterSelectionMode(photo.relPath) },
+                                            onLongClick = {
+                                                // A long press starts selection (and,
+                                                // if the finger moves, a drag). While
+                                                // already selecting, a long press that
+                                                // turns into a drag must not reset it.
+                                                if (!uiState.selectionMode) {
+                                                    viewModel.enterSelectionMode(photo.relPath)
+                                                }
+                                            },
                                             dragController = dragController,
                                         )
                                     }
@@ -1388,6 +1487,73 @@ private fun MoveUpChip(
     }
 }
 
+/**
+ * The drag-time ancestor bar: a horizontally scrollable row with one chip per
+ * ancestor of [folderRel] (root first, "Inventory" for `""`), each a drop
+ * target registered under `"ancestor:<relative path>"`, plus the current
+ * folder's own name as a non-target chip. Only shown while dragging and never
+ * at the root.
+ */
+@Composable
+private fun AncestorChipsRow(
+    folderRel: String,
+    hoveredTarget: String?,
+    onRegister: (String, Rect) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val scrollState = rememberScrollState()
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(scrollState)
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        ancestorPaths(folderRel).forEach { relPath ->
+            val targetId = ANCESTOR_TARGET_PREFIX + relPath
+            DropChip(
+                label = if (relPath.isEmpty()) {
+                    stringResource(R.string.title_inventory)
+                } else {
+                    relPath.substringAfterLast('/')
+                },
+                highlighted = hoveredTarget == targetId,
+                modifier = Modifier.onGloballyPositioned { coordinates ->
+                    onRegister(targetId, coordinates.boundsInRoot())
+                },
+            )
+        }
+        // The current folder itself: orientation only, never a drop target.
+        DropChip(
+            label = folderRel.substringAfterLast('/'),
+            highlighted = false,
+        )
+    }
+}
+
+/** One small ancestor-bar chip; the current-folder chip is never registered. */
+@Composable
+private fun DropChip(
+    label: String,
+    highlighted: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    AssistChip(
+        onClick = {},
+        label = {
+            Text(text = label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        },
+        modifier = modifier.then(
+            if (highlighted) {
+                Modifier.border(2.dp, DropHighlightColor, RoundedCornerShape(8.dp))
+            } else {
+                Modifier
+            },
+        ),
+    )
+}
+
 /** FAB sheet: the three ways to put something into this container. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1611,32 +1777,50 @@ private fun PhotoTile(
     photo: CacheEntry,
     selectionMode: Boolean,
     selected: Boolean,
+    selectedPaths: Set<String>,
     photoLoader: suspend (String) -> Any?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     dragController: DragController,
 ) {
-    // A long press that turns into a drag must not also enter selection mode.
-    var dragJustEnded by remember { mutableStateOf(false) }
     // Gesture coordinates are local to this tile; the session (ghost + drop
     // targets) speaks root coordinates, so the tile origin translates them.
     var tileOrigin by remember { mutableStateOf(Offset.Zero) }
+    val context = LocalContext.current
+    // The drag detector is keyed only on the photo, so the current selection
+    // is read through updated-state holders instead (restarting the detector
+    // mid-gesture would cancel it).
+    val latestSelectionMode = rememberUpdatedState(selectionMode)
+    val latestSelectedPaths = rememberUpdatedState(selectedPaths)
     Box(
         modifier = Modifier
             .aspectRatio(1f)
             .onGloballyPositioned { tileOrigin = it.boundsInRoot().topLeft }
             .combinedClickable(
                 onClick = onClick,
-                onLongClick = { if (!dragJustEnded) onLongClick() },
+                onLongClick = onLongClick,
             )
             .pointerInput(photo.relPath) {
                 detectDragGesturesAfterLongPress(
                     onDragStart = { offset ->
-                        dragJustEnded = true
+                        // In selection mode a dragged tile that is part of the
+                        // selection carries the WHOLE selection; any other tile
+                        // (selected or not) carries just itself.
+                        val selection = latestSelectedPaths.value
+                        val inSelectionMode = latestSelectionMode.value
+                        val paths = if (inSelectionMode && photo.relPath in selection) {
+                            selection.toList()
+                        } else {
+                            listOf(photo.relPath)
+                        }
                         dragController.start(
                             DragPayload(
-                                relPaths = listOf(photo.relPath),
-                                label = photo.description ?: photo.name,
+                                relPaths = paths,
+                                label = if (paths.size > 1) {
+                                    context.getString(R.string.drag_count, paths.size)
+                                } else {
+                                    photo.description ?: photo.name
+                                },
                             ),
                         )
                         dragController.pointer = tileOrigin + offset
@@ -1646,14 +1830,12 @@ private fun PhotoTile(
                     },
                     onDragEnd = {
                         dragController.drop()
-                        dragJustEnded = false
                     },
                     onDragCancel = {
                         // A destination change (spring-loaded navigation)
                         // disposes this tile mid-gesture and cancels the
                         // detector; the root-level tracker owns the session
                         // now, so this must NOT tear it down.
-                        dragJustEnded = false
                     },
                 )
             }
