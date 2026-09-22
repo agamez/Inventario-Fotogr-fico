@@ -46,7 +46,7 @@ scripts/   make_icon.py (parametric icon generator); smoke_test.py (e2e harness)
 - JVM unit tests: `JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew :shared:jvmTest :desktop:jvmTest` (system JDK is 25-EA — it cannot run Gradle; always pin JDK 17).
 - Android build: `./gradlew :app:assembleDebug`.
 - Desktop: `./gradlew :desktop:packageFatJar` + headless selftest `./gradlew :desktop:run --args="--headless-selftest <folder>"` (must print `SELFTEST OK`, exit 0).
-- Full Android e2e harness: `python3 scripts/smoke_test.py` on booted emulator `emulator-5554` (~35 min; expected: 0 failed, ≤4 documented soft warnings). Run for any Android-behavior change.
+- Full Android e2e harness: `python3 scripts/smoke_test.py` on booted emulator `emulator-5554` (launch it via `scripts/start_emulator.sh`; expected: 0 failed, ≤4 documented soft warnings). Run for any Android-behavior change. **Policy: one full run per change; two consecutive runs only for harness-infrastructure changes or milestone gates.** The harness zeroes animations and prints its total duration (see `docs/test-optimization-plan.md`).
 - Desktop EXIF writes are verified against host Pillow (0x010E/0x9286/0x9003 round-trips) — pixel data must stay byte-identical (lossless).
 - Emulator notes: grant storage via `adb shell appops set com.inventory MANAGE_EXTERNAL_STORAGE allow`; `adb reverse` for host-loopback mock servers; uiautomator wedges → `pkill -f uiautomator` + retry (harness self-heals).
 

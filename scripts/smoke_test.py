@@ -2212,8 +2212,11 @@ def t_disk_final():
     dbs = sh("run-as com.inventory ls databases 2>/dev/null")
     check("cache.db present as the rebuildable index", "cache.db" in dbs, dbs)
 
+MAIN_T0 = 0.0
+
 def main():
-    global SERIAL, SW, SH
+    global SERIAL, SW, SH, MAIN_T0
+    MAIN_T0 = time.time()
     out = adb("devices").stdout
     devs = [l.split("\t")[0] for l in out.splitlines() if "\tdevice" in l]
     if "emulator-5554" in devs:
@@ -2231,6 +2234,11 @@ def main():
     # mid-run on this emulator image and hijacked an app-bar tap: silence
     # heads-up notifications and disable the offender for the whole run.
     sh("settings put global heads_up_notifications_enabled 0")
+    # Stage 1 (docs/test-optimization-plan.md): animations off — dialogs/sheets
+    # appear instantly on the software-rendered emulator, so poll-based waits
+    # return sooner.
+    for _key in ("window_animation_scale", "transition_animation_scale", "animator_duration_scale"):
+        sh(f"settings put global {_key} 0.0")
     sh("am force-stop com.google.android.calendar")
     sh("pm disable-user --user 0 com.google.android.calendar")
     sh("pkill -f uiautomator >/dev/null 2>&1")  # clear any wedged dump service
@@ -2273,6 +2281,7 @@ def main():
     t_drag_drop()
     t_disk_final()
     print(f"\n===== {passed} passed, {failed} failed, {len(soft_warnings)} warnings =====")
+    print(f"Total duration: {time.time() - MAIN_T0:.0f}s")
     print("Per-scenario (passed/total):")
     for k in sorted(tally):
         p, f = tally[k]
