@@ -28,7 +28,9 @@ SAME disk tree, so every disk assertion is mode-agnostic. Run order:
      CRUD, drill nesting, camera/gallery flow + EXIF + byte-identity,
      search scopes, preview edit + multi-select move, cycle-proof moves,
      covers, conflicts, PC edits adopted by Rescan (its cache-wipe step
-     re-answers the chooser too), and an exact-tree disk audit.
+     re-answers the chooser too), drag-and-drop gestures (photo/container/
+     ancestor-chip/selection/BACK-cancel, all restored), and an exact-tree
+     disk audit.
 
   python3 scripts/smoke_test.py    # always pins emulator-5554 when present
 
@@ -903,6 +905,94 @@ def gallery_pick_one(where=""):
     if add is None: return False
     tap(add)
     return wait_for(text="Description (required)", timeout=10) is not None
+
+# ---- drag-and-drop motion helpers ------------------------------------------
+# API 35's `input motionevent DOWN|MOVE|UP x y` injects ONE MotionEvent per
+# call; the four drag gestures (photo/container/ancestor/selection) need a
+# realistic stream: a DOWN, a >long-press hold, then small MOVE steps with
+# short pauses, and dwell repeats on a hovered target. `input draganddrop`
+# would be a single straight swipe with no dwell, so every dwell scenario
+# uses motionevent. Measured: the separate `input` processes share the
+# pointer stream (the ghost follows and spring-load fires), so no extra
+# plumbing is needed.
+
+def motion_down(x, y):
+    sh(f"input motionevent DOWN {x} {y}")
+
+def motion_move(x, y):
+    sh(f"input motionevent MOVE {x} {y}")
+
+def motion_up(x, y):
+    sh(f"input motionevent UP {x} {y}")
+
+def drag_move_to(x0, y0, x1, y1, step=50, pause=0.12):
+    """Glide the pointer in ~50px steps (the ghost follows the finger)."""
+    import math
+    dist = math.hypot(x1 - x0, y1 - y0)
+    n = max(1, int(dist // step))
+    for i in range(1, n + 1):
+        t = i / n
+        motion_move(int(x0 + (x1 - x0) * t), int(y0 + (y1 - y0) * t))
+        time.sleep(pause)
+    motion_move(x1, y1)
+    time.sleep(pause)
+
+def drag_dwell(x, y, ms):
+    """Hold position, re-sending MOVE, for the spring-load's 800ms dwell."""
+    end = time.time() + ms / 1000.0
+    while time.time() < end:
+        motion_move(x, y)
+        time.sleep(0.15)
+
+def drag_start(x, y, hold=1.0):
+    """DOWN + hold past the long-press threshold (starts the drag session)."""
+    motion_down(x, y)
+    time.sleep(hold)
+
+def drag_by_desc(desc):
+    ns = find_all(dump(), desc=desc)
+    return ns[0] if ns else None
+
+def drag_by_text(text):
+    ns = [n for n in find_all(dump(), text=text) if n.get("text") == text]
+    return ns[0] if ns else None
+
+def drag_center(node):
+    return center(node)
+
+def drag_up_chip():
+    return drag_by_desc("Move up one level")
+
+def drag_spring_up(x, y, dwell_ms=900):
+    """Hover the drag-time "↑" chip just past one 800ms spring tick, then
+    leave it for a neutral spot. Parking ON the chip would fire a second
+    navigation (the chip stays under the pointer across the destination
+    change), so exactly one level is climbed here."""
+    u = drag_up_chip()
+    if u is None:
+        return None
+    ux, uy = center(u)
+    drag_move_to(x, y, ux, uy)
+    drag_dwell(ux, uy, dwell_ms)
+    motion_move(ux, uy + 75)  # neutral: below the chip, above the grid rows
+    time.sleep(0.4)
+    return (ux, uy)
+
+def drag_seed_jpeg(desc, note, rel):
+    """Push a distinct EXIF-stamped JPEG for the selection-drag scenario."""
+    import tempfile
+    from PIL import Image
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    tmp.close()
+    im = Image.new("RGB", (8, 8), (30, 200, 200))
+    ex = Image.Exif()
+    ex[0x010E] = desc
+    if note:
+        ex[0x9286] = ("ASCII\x00\x00\x00" + note).encode("latin-1")
+    ex[0x9003] = "2026:01:01 12:00:00"
+    im.save(tmp.name, "JPEG", exif=ex)
+    adb("push", tmp.name, fp(rel), timeout=30)
+    os.unlink(tmp.name)
 
 # ---------------------------------------------------------------- scenarios
 
@@ -1811,8 +1901,265 @@ def t_ai_autolabel():
             except Exception:
                 server.kill()
 
+def t_drag_drop():
+    """Drag-and-drop end to end, on the suite tree as the AI scenario left
+    it (root: Attic shelf + Estate → Storage unit → Shelf A/Shelf B).
+
+    Seven gestures, each asserted on DISK (the source of truth) with
+    uiautomator dumps only for the UI state: photo → sibling with "↑"
+    spring-load (1), container → sibling with "↑" + row spring-load (2),
+    cycle guard on a dragged container (3), ancestor-chip drop to the
+    inventory root (4), selection drag carrying the whole selection (5),
+    BACK cancels (6) and long-press-release still selects (7).
+
+    Every disk move is restored (adb mv + Rescan through the root icon) so
+    the final exact-tree audit sees the suite tree untouched. Motion is
+    injected with `input motionevent` (DOWN → hold → ~50px MOVEs → dwell →
+    UP); straight `input draganddrop` cannot dwell, so it is not used.
+    Known queued-snackbar flakes are skipped here — the disk is asserted
+    hard and no drag check is soft."""
+    mark("12 drag and drop")
+    ESTATE = "Estate"
+    SU = ESTATE + "/Storage unit"
+    SA = SU + "/Shelf A"
+    SB = SU + "/Shelf B"
+    ATTIC = SU + "/Attic"
+    wj_sa = fp(SA, "Winter jackets x2.jpg")
+    wj_sb = fp(SB, "Winter jackets x2.jpg")
+
+    # ---- 1. photo drag to a sibling, spring-loading up one screen --------
+    check("dnd1 starts on home", go_home())
+    tap_text(ESTATE); time.sleep(1.8)
+    tap_text("Storage unit"); time.sleep(1.8)
+    tap_text("Shelf A"); time.sleep(1.8)
+    check("dnd1 inside Shelf A", bool(texts_exact("Shelf A")))
+    tile = drag_by_desc("Winter jackets x2")
+    check("dnd1 photo tile located", tile is not None)
+    if tile is not None:
+        tx, ty = drag_center(tile)
+        drag_start(tx, ty)
+        check("dnd1 up-chip visible mid-drag", drag_up_chip() is not None)
+        drag_spring_up(tx, ty)
+        check("dnd1 up-chip spring-loaded to Storage unit",
+              wait_for(text="Storage unit", timeout=6) is not None)
+        row = drag_by_text("Shelf B")
+        check("dnd1 Shelf B row visible after spring-load", row is not None)
+        if row is not None:
+            rx, ry = drag_center(row)
+            drag_move_to(85, 577, rx, ry)
+            motion_up(rx, ry)
+            time.sleep(2.0)
+            check("dnd1 disk: photo now under Shelf B", fs_exists(wj_sb))
+            check("dnd1 disk: photo gone from Shelf A", not fs_exists(wj_sa))
+    go_home()
+    sh(f"mv {sq(wj_sb)} {sq(wj_sa)}")
+    check("dnd1 restore: photo back under Shelf A",
+          fs_exists(wj_sa) and not fs_exists(wj_sb))
+    check("dnd1 rescan after restore", rescan_from_root())
+
+    # ---- 2. container drag: "↑" spring-load, then row spring-load --------
+    # Attic is a fresh sibling of Shelf A under Storage unit (removed again
+    # below): the drop lands in Storage unit/Attic/Shelf A.
+    if fs_isdir(fp(ATTIC, "Shelf A")):
+        sh(f"mv {sq(fp(ATTIC, 'Shelf A'))} {sq(fp(SU, 'Shelf A'))}")
+    sh(f"rm -rf {sq(fp(ATTIC))}")
+    sh(f"mkdir -p {sq(fp(ATTIC))}")
+    check("dnd2 rescan after seeding Attic", rescan_from_root())
+    tap_text(ESTATE); time.sleep(1.8)
+    tap_text("Storage unit"); time.sleep(1.8)
+    row = drag_by_text("Shelf A")
+    check("dnd2 Shelf A row located", row is not None)
+    if row is not None:
+        rx, ry = drag_center(row)
+        drag_start(rx, ry)
+        up = drag_spring_up(rx, ry)
+        check("dnd2 up-chip visible mid-drag", up is not None)
+        check("dnd2 up-chip spring-loaded to Estate",
+              wait_for(text=ESTATE, timeout=6) is not None)
+        su = drag_by_text("Storage unit")
+        check("dnd2 Storage unit row visible for row spring-load", su is not None)
+        if su is not None:
+            sx, sy = drag_center(su)
+            drag_move_to(85, 577, sx, sy)
+            drag_dwell(sx, sy, 900)
+            motion_move(85, 577); time.sleep(0.4)
+            check("dnd2 row spring-load entered Storage unit",
+                  drag_by_text("Attic") is not None)
+            attic = drag_by_text("Attic")
+            if attic is not None:
+                ax, ay = drag_center(attic)
+                drag_move_to(85, 577, ax, ay)
+                motion_up(ax, ay)
+                time.sleep(2.0)
+                check("dnd2 disk: Storage unit/Attic/Shelf A exists",
+                      fs_isdir(fp(ATTIC, "Shelf A")))
+                check("dnd2 disk: contents travelled",
+                      fs_exists(fp(ATTIC, "Shelf A", "Winter jackets x2.jpg"))
+                      and fs_exists(fp(ATTIC, "Shelf A", "_cover.jpg")))
+                check("dnd2 disk: old Shelf A path gone", not fs_exists(fp(SU, "Shelf A")))
+    go_home()
+    if fs_isdir(fp(ATTIC, "Shelf A")):
+        sh(f"mv {sq(fp(ATTIC, 'Shelf A'))} {sq(fp(SU, 'Shelf A'))}")
+    sh(f"rm -rf {sq(fp(ATTIC))}")
+    check("dnd2 restore: Shelf A back under Storage unit",
+          fs_isdir(fp(SU, "Shelf A")) and not fs_exists(fp(ATTIC)))
+    check("dnd2 rescan after restore", rescan_from_root())
+
+    # ---- 3. cycle guard: a dragged container may not drop on itself ------
+    # (The literal "↑ then drop on the row now visible one level up" cannot
+    # be staged: a container's own row exists only on its parent screen, and
+    # the "↑" chip from there climbs to the grandparent. The guard is
+    # exercised where it bites: dwelling on the dragged row must not
+    # spring-load, and releasing on it must not move anything.)
+    check("dnd3 starts on home", go_home())
+    tap_text(ESTATE); time.sleep(1.8)
+    row = drag_by_text("Storage unit")
+    check("dnd3 Storage unit row located", row is not None)
+    if row is not None:
+        rx, ry = drag_center(row)
+        drag_start(rx, ry)
+        motion_move(rx, ry)
+        drag_dwell(rx, ry, 1300)  # past one 800ms tick
+        check("dnd3 blocked self row did not spring-load",
+              drag_by_text("Storage unit") is not None and texts_exact(ESTATE))
+        motion_up(rx, ry)
+        time.sleep(1.5)
+    paths = [p for p in sh(f"find {sq(FS_ROOT)} -name 'Storage unit' 2>/dev/null").splitlines()
+             if p.strip()]
+    check("dnd3 disk: exactly one 'Storage unit' path, no nesting",
+          paths == [fp(SU)], str(paths))
+    check("dnd3 disk: subtree intact",
+          fs_isdir(fp(SU, "Shelf A")) and fs_isdir(fp(SU, "Shelf B"))
+          and fs_exists(wj_sa))
+
+    # ---- 4. ancestor chip drop to the inventory root ---------------------
+    check("dnd4 starts on home", go_home())
+    tap_text(ESTATE); time.sleep(1.8)
+    tap_text("Storage unit"); time.sleep(1.8)
+    tap_text("Shelf A"); time.sleep(1.8)
+    check("dnd4 inside Shelf A", bool(texts_exact("Shelf A")))
+    tile = drag_by_desc("Winter jackets x2")
+    check("dnd4 photo tile located", tile is not None)
+    root_photo = fp("Winter jackets x2.jpg")
+    if tile is not None:
+        tx, ty = drag_center(tile)
+        drag_start(tx, ty)
+        chip = drag_by_text("Inventory")
+        check("dnd4 Inventory ancestor chip visible", chip is not None)
+        if chip is not None:
+            cx, cy = drag_center(chip)
+            drag_move_to(tx, ty, cx, cy)
+            time.sleep(0.4)
+            motion_up(cx, cy)
+            time.sleep(2.0)
+            check("dnd4 disk: photo dropped at the inventory root", fs_exists(root_photo))
+            check("dnd4 disk: photo gone from Shelf A", not fs_exists(wj_sa))
+    go_home()
+    if fs_exists(root_photo):
+        sh(f"mv {sq(root_photo)} {sq(wj_sa)}")
+    check("dnd4 restore: photo back under Shelf A",
+          fs_exists(wj_sa) and not fs_exists(root_photo))
+    check("dnd4 rescan after restore", rescan_from_root())
+
+    # ---- 5. selection drag carries the whole selection -------------------
+    extra_name = "Drag extra"
+    extra_sa = fp(SA, extra_name + ".jpg")
+    extra_sb = fp(SB, extra_name + ".jpg")
+    drag_seed_jpeg(extra_name, "", SA + "/" + extra_name + ".jpg")
+    check("dnd5 second photo seeded", fs_exists(extra_sa))
+    check("dnd5 rescan after seeding", rescan_from_root())
+    tap_text(ESTATE); time.sleep(1.8)
+    tap_text("Storage unit"); time.sleep(1.8)
+    tap_text("Shelf A"); time.sleep(1.8)
+    extra_tile = drag_by_desc(extra_name)
+    check("dnd5 seeded tile located", extra_tile is not None)
+    if extra_tile is not None:
+        ex, ey = drag_center(extra_tile)
+        drag_start(ex, ey)
+        motion_up(ex, ey)
+        time.sleep(1.2)
+        check("dnd5 long-press-release entered selection",
+              wait_for(text="1 selected", timeout=5) is not None)
+        wj_tile = drag_by_desc("Winter jackets x2")
+        if wj_tile is not None:
+            wx, wy = drag_center(wj_tile)
+            sh(f"input tap {wx} {wy}")
+            time.sleep(1.0)
+        check("dnd5 two photos selected",
+              wait_for(text="2 selected", timeout=5) is not None)
+        tile = drag_by_desc(extra_name)
+        if tile is not None:
+            tx, ty = drag_center(tile)
+            drag_start(tx, ty)
+            drag_spring_up(tx, ty)
+            check("dnd5 spring-loaded to Storage unit",
+                  wait_for(text="Storage unit", timeout=6) is not None)
+            row = drag_by_text("Shelf B")
+            check("dnd5 Shelf B row visible", row is not None)
+            if row is not None:
+                rx, ry = drag_center(row)
+                drag_move_to(85, 577, rx, ry)
+                motion_up(rx, ry)
+                time.sleep(2.0)
+                check("dnd5 disk: both photos under Shelf B",
+                      fs_exists(wj_sb) and fs_exists(extra_sb))
+                check("dnd5 disk: both photos left Shelf A",
+                      not fs_exists(wj_sa) and not fs_exists(extra_sa))
+    go_home()
+    for name in ("Winter jackets x2.jpg", extra_name + ".jpg"):
+        src = fp(SB, name)
+        if fs_exists(src):
+            sh(f"mv {sq(src)} {sq(fp(SA, name))}")
+    if fs_exists(extra_sa):
+        sh(f"rm {sq(extra_sa)}")
+    check("dnd5 restore: only the original photo back under Shelf A",
+          fs_exists(wj_sa) and not fs_exists(extra_sa)
+          and not fs_exists(extra_sb))
+    check("dnd5 rescan after restore", rescan_from_root())
+
+    # ---- 6. Back cancels an in-flight drag -------------------------------
+    check("dnd6 starts on home", go_home())
+    tap_text(ESTATE); time.sleep(1.8)
+    tap_text("Storage unit"); time.sleep(1.8)
+    tap_text("Shelf A"); time.sleep(1.8)
+    check("dnd6 inside Shelf A", bool(texts_exact("Shelf A")))
+    tile = drag_by_desc("Winter jackets x2")
+    check("dnd6 photo tile located", tile is not None)
+    if tile is not None:
+        tx, ty = drag_center(tile)
+        drag_start(tx, ty)
+        drag_move_to(tx, ty, tx, ty + 90)
+        sh("input keyevent 4")
+        time.sleep(0.5)
+        d = dump()
+        check("dnd6 back ended the drag session (no drag affordances)",
+              d is not None and not find_all(d, desc="Move up one level")
+              and not find_all(d, text="Inventory"))
+        motion_up(tx, ty + 90)
+        time.sleep(1.5)
+        # the long press that started the drag also entered selection mode
+        tap_desc("Exit selection", timeout=5)
+        time.sleep(1.0)
+        check("dnd6 back did not leave Shelf A", bool(texts_exact("Shelf A")))
+        check("dnd6 disk: photo untouched", fs_exists(wj_sa) and not fs_exists(wj_sb))
+
+    # ---- 7. long-press-release still enters selection --------------------
+    tile = drag_by_desc("Winter jackets x2")
+    check("dnd7 photo tile located", tile is not None)
+    if tile is not None:
+        tx, ty = drag_center(tile)
+        drag_start(tx, ty)
+        motion_up(tx, ty)
+        time.sleep(1.2)
+        check("dnd7 long-press-release selected the tile",
+              wait_for(text="1 selected", timeout=5) is not None)
+        tap_desc("Exit selection", timeout=5)
+        time.sleep(0.8)
+        check("dnd7 selection exited", bool(texts_exact("Shelf A")))
+    check("dnd7 back home", go_home())
+
 def t_disk_final():
-    mark("12 disk final")
+    mark("13 disk final")
     exp = sorted([
         FS_ROOT,
         fp("Attic shelf"),
@@ -1923,6 +2270,7 @@ def main():
     t_conflicts()
     t_pc_edits()
     t_ai_autolabel()
+    t_drag_drop()
     t_disk_final()
     print(f"\n===== {passed} passed, {failed} failed, {len(soft_warnings)} warnings =====")
     print("Per-scenario (passed/total):")
