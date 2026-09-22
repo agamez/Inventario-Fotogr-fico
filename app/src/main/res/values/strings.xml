@@ -17,6 +17,7 @@
     <string name="rename">Rename</string>
     <string name="delete">Delete</string>
     <string name="navigate_back">Back</string>
+    <string name="move_up_here">Move up one level</string>
     <string name="inventory_empty">Your inventory is empty.\nTap + to add your first container.</string>
     <string name="empty_containers">Nothing here yet.\nTap + to add a container or photograph your items.</string>
     <string name="container_created">Container created</string>

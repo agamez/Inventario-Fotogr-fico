@@ -88,6 +88,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -100,6 +101,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -118,9 +121,26 @@ import com.inventory.feature.containers.drag.DragPayload
 import com.inventory.storage.StorageMode
 import com.inventory.ui.rememberBackendModel
 import com.inventory.ui.rememberPreviewBitmap
+import kotlinx.coroutines.delay
 
 /** Maximum number of images the gallery picker may return at once. */
 private const val MAX_GALLERY_IMAGES = 10
+
+/** Dwell on a hovered row / the "↑" chip before the drag springs the screen. */
+private const val SPRING_LOAD_DWELL_MS = 800L
+
+/**
+ * Ascends one level from [folderRel]: opens the parent container, or the
+ * root destination when the parent's relative path is empty.
+ */
+private fun navigateToParent(
+    folderRel: String,
+    onOpenContainer: (String) -> Unit,
+    onBack: () -> Unit,
+) {
+    val parentRel = folderRel.substringBeforeLast('/', "")
+    if (parentRel.isEmpty()) onBack() else onOpenContainer(parentRel)
+}
 
 /** Ring/tint marking the container row currently under an in-flight photo drag. */
 private val DropHighlightColor = Color(0xFF009688)
@@ -173,7 +193,8 @@ fun ContainerScreen(
     val hapticFeedback = LocalHapticFeedback.current
 
     // Drop-target ownership is per screen: the folder this screen addresses.
-    val dragOwner = viewModel.folderRel
+    val folderRel = viewModel.folderRel
+    val dragOwner = folderRel
 
     var searchExpanded by remember { mutableStateOf(false) }
     var showFabSheet by remember { mutableStateOf(false) }
@@ -187,6 +208,7 @@ fun ContainerScreen(
     var fullScreenPhotoRel by remember { mutableStateOf<String?>(null) }
     var showCoverSheet by remember { mutableStateOf(false) }
     var coverTargetRel by remember { mutableStateOf<String?>(null) }
+    var upChipBounds by remember { mutableStateOf<Rect?>(null) }
 
     val galleryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(MAX_GALLERY_IMAGES),
@@ -243,6 +265,31 @@ fun ContainerScreen(
             .firstOrNull { (key, rect) -> key.startsWith(prefix) && rect.contains(point) }
             ?.key
             ?.substringAfter('|')
+    }
+
+    // Spring-loaded navigation: dwelling on a hovered container row opens it
+    // so the drag can continue into that subtree. The session (payload,
+    // pointer, targets) lives at the navigation-graph root, so the drag
+    // survives the destination change; the dwell restarts whenever the
+    // hovered target changes (including to null when the finger leaves).
+    LaunchedEffect(dragController.hoveredTarget) {
+        val hovered = dragController.hoveredTarget ?: return@LaunchedEffect
+        if (hovered == dragOwner) return@LaunchedEffect
+        delay(SPRING_LOAD_DWELL_MS)
+        if (dragController.hoveredTarget == hovered) onOpenContainer(hovered)
+    }
+
+    // Drag-time "↑" affordance: dwelling on it ascends to the parent folder
+    // (navigation only — it is NOT a drop target). Hidden at the root.
+    val upChipVisible = dragController.payload != null && !isRoot
+    val pointerOverUpChip = upChipVisible &&
+        upChipBounds?.let { bounds ->
+            dragController.pointer?.let { bounds.contains(it) } ?: false
+        } == true
+    LaunchedEffect(pointerOverUpChip) {
+        if (!pointerOverUpChip) return@LaunchedEffect
+        delay(SPRING_LOAD_DWELL_MS)
+        if (pointerOverUpChip) navigateToParent(folderRel, onOpenContainer, onBack)
     }
 
     // Drop resolution: the row under the pointer wins, releasing anywhere
@@ -462,6 +509,15 @@ fun ContainerScreen(
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                     }
+                }
+                if (upChipVisible) {
+                    MoveUpChip(
+                        contentDescription = stringResource(R.string.move_up_here),
+                        onClick = { navigateToParent(folderRel, onOpenContainer, onBack) },
+                        modifier = Modifier
+                            .padding(start = 12.dp, top = 4.dp, bottom = 4.dp)
+                            .onGloballyPositioned { upChipBounds = it.boundsInRoot() },
+                    )
                 }
                 if (uiState.scanning) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -1304,6 +1360,34 @@ private fun SectionHeader(text: String, modifier: Modifier = Modifier) {
     )
 }
 
+/**
+ * The drag-time "↑" chip: a navigation affordance that ascends one level.
+ * It is not registered as a drop target — dropping on it does nothing.
+ */
+@Composable
+private fun MoveUpChip(
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        tonalElevation = 2.dp,
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .semantics(mergeDescendants = true) { this.contentDescription = contentDescription },
+    ) {
+        Text(
+            text = "↑",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+        )
+    }
+}
+
 /** FAB sheet: the three ways to put something into this container. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -1565,7 +1649,10 @@ private fun PhotoTile(
                         dragJustEnded = false
                     },
                     onDragCancel = {
-                        dragController.end()
+                        // A destination change (spring-loaded navigation)
+                        // disposes this tile mid-gesture and cancels the
+                        // detector; the root-level tracker owns the session
+                        // now, so this must NOT tear it down.
                         dragJustEnded = false
                     },
                 )

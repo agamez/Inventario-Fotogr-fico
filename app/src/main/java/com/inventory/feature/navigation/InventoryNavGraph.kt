@@ -13,6 +13,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -50,7 +52,31 @@ fun InventoryNavGraph(
 ) {
     val dragController = remember { DragController() }
 
-    Box(modifier = modifier) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            // The gesture source (a photo tile) lives inside a destination
+            // that spring-loaded navigation can replace mid-drag. This root
+            // node stays composed and observes the pointer in the Initial
+            // pass (never consuming), so the in-flight session keeps
+            // following the finger and ends with the drop on release.
+            .pointerInput(dragController) {
+                try {
+                    awaitPointerEventScope {
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (dragController.payload == null) continue
+                            event.changes.firstOrNull()?.let { change ->
+                                dragController.pointer = change.position
+                            }
+                            if (event.changes.none { it.pressed }) dragController.drop()
+                        }
+                    }
+                } finally {
+                    if (dragController.payload != null) dragController.end()
+                }
+            },
+    ) {
         NavHost(
             navController = navController,
             startDestination = Screens.Inventory.route,
@@ -74,6 +100,7 @@ fun InventoryNavGraph(
                         navController.navigate(Screens.Settings.route)
                     },
                     onBack = {},
+                    dragController = dragController,
                 )
             }
 
