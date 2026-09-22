@@ -88,11 +88,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -125,11 +127,13 @@ import com.inventory.ai.VisionOutcome
 import com.inventory.cache.CacheEntry
 import com.inventory.cache.ChildCounts
 import com.inventory.feature.containers.drag.DragController
+import com.inventory.feature.containers.drag.DragKind
 import com.inventory.feature.containers.drag.DragPayload
 import com.inventory.storage.StorageMode
 import com.inventory.ui.rememberBackendModel
 import com.inventory.ui.rememberPreviewBitmap
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** Maximum number of images the gallery picker may return at once. */
 private const val MAX_GALLERY_IMAGES = 10
@@ -295,18 +299,30 @@ fun ContainerScreen(
         if (storage.ready) viewModel.onStorageReady()
     }
 
-    // While a photo drag is in flight, keep the drop target under the ghost
-    // pointer current; moving off every row clears the highlight.
-    LaunchedEffect(dragController.pointer, dragController.targets) {
+    // While a drag is in flight, keep the drop target under the ghost
+    // pointer current; moving off every row clears the highlight. Blocked
+    // targets (a dragged container and its subtree) and the payload's own
+    // paths never hover: they may not receive a drop.
+    LaunchedEffect(
+        dragController.pointer,
+        dragController.targets,
+        dragController.blockedTargets,
+    ) {
         val point = dragController.pointer
         if (dragController.payload == null || point == null) {
             dragController.hoveredTarget = null
             return@LaunchedEffect
         }
         val prefix = "$dragOwner|"
+        val blocked = dragController.blockedTargets
+        val ownPaths = dragController.payload?.relPaths.orEmpty()
         dragController.hoveredTarget = dragController.targets
             .entries
-            .firstOrNull { (key, rect) -> key.startsWith(prefix) && rect.contains(point) }
+            .firstOrNull { (key, rect) ->
+                if (!key.startsWith(prefix) || !rect.contains(point)) return@firstOrNull false
+                val id = key.substringAfter('|')
+                id !in blocked && id !in ownPaths
+            }
             ?.key
             ?.substringAfter('|')
     }
@@ -321,6 +337,9 @@ fun ContainerScreen(
         if (hovered == dragOwner) return@LaunchedEffect
         // Ancestor chips are drop-only: hovering one must never navigate.
         if (hovered.startsWith(ANCESTOR_TARGET_PREFIX)) return@LaunchedEffect
+        // A blocked row (the dragged container or a descendant) never
+        // receives a drop, so dwelling on it must not spring it open either.
+        if (hovered in dragController.blockedTargets) return@LaunchedEffect
         delay(SPRING_LOAD_DWELL_MS)
         if (dragController.hoveredTarget == hovered) onOpenContainer(hovered)
     }
@@ -343,15 +362,25 @@ fun ContainerScreen(
     val ancestorChipsVisible = dragController.payload != null && !isRoot
 
     // Drop resolution: the row (or ancestor chip) under the pointer wins,
-    // releasing anywhere else cancels. The snackbar comes from the ViewModel.
+    // releasing anywhere else cancels. Blocked containers (the dragged
+    // subtree) and the payload's own paths are no-ops. The snackbar comes
+    // from the ViewModel.
     SideEffect {
         dragController.onDrop = { payload, target ->
             // Ancestor chips carry an "ancestor:" prefix; the rest of the id
             // is the destination's relative path ("" = root).
             val destination = target?.removePrefix(ANCESTOR_TARGET_PREFIX)
-            if (destination != null) {
+            if (destination != null &&
+                destination !in dragController.blockedTargets &&
+                destination !in payload.relPaths
+            ) {
                 hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                viewModel.movePhotosTo(payload.relPaths, destination)
+                when (payload.kind) {
+                    DragKind.CONTAINER ->
+                        viewModel.moveFolderTo(payload.relPaths.first(), destination)
+                    DragKind.PHOTO ->
+                        viewModel.movePhotosTo(payload.relPaths, destination)
+                }
             }
         }
     }
@@ -682,12 +711,21 @@ fun ContainerScreen(
                                     key = { entry -> entry.relPath },
                                     span = { GridItemSpan(maxLineSpan) },
                                 ) { entry ->
+                                    val payload = dragController.payload
+                                    val containerDrag = payload?.kind == DragKind.CONTAINER
+                                    val draggedRel =
+                                        if (containerDrag) payload?.relPaths?.firstOrNull() else null
                                     ContainerRow(
                                         entry = entry,
                                         counts = uiState.childCounts[entry.relPath],
                                         coverLoader = viewModel::coverModel,
-                                        highlighted = dragController.payload != null &&
+                                        highlighted = payload != null &&
                                             dragController.hoveredTarget == entry.relPath,
+                                        blocked = containerDrag &&
+                                            entry.relPath in dragController.blockedTargets,
+                                        dragging = entry.relPath == draggedRel,
+                                        blockedResolver = viewModel::blockedMoveTargets,
+                                        dragController = dragController,
                                         modifier = Modifier.onGloballyPositioned { coordinates ->
                                             dragController.registerTarget(
                                                 dragOwner,
@@ -1320,6 +1358,10 @@ private fun ContainerRow(
     counts: ChildCounts?,
     coverLoader: suspend (String) -> Any?,
     highlighted: Boolean,
+    blocked: Boolean,
+    dragging: Boolean,
+    blockedResolver: suspend (String) -> Set<String>,
+    dragController: DragController,
     onOpen: () -> Unit,
     onRename: (String, String) -> Unit,
     onMove: (String) -> Unit,
@@ -1329,10 +1371,16 @@ private fun ContainerRow(
     modifier: Modifier = Modifier,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    // Gesture coordinates are local to the row; the session (ghost + drop
+    // targets) speaks root coordinates, so the row origin translates them.
+    var rowOrigin by remember { mutableStateOf(Offset.Zero) }
+    val scope = rememberCoroutineScope()
     Box(modifier = modifier) {
         ListItem(
             modifier = Modifier
                 .fillMaxWidth()
+                .onGloballyPositioned { rowOrigin = it.boundsInRoot().topLeft }
+                .alpha(if (blocked || dragging) 0.4f else 1f)
                 .then(
                     if (highlighted) {
                         Modifier
@@ -1342,10 +1390,58 @@ private fun ContainerRow(
                         Modifier
                     },
                 )
-                .combinedClickable(
-                    onClick = onOpen,
-                    onLongClick = { menuExpanded = true },
-                ),
+                .combinedClickable(onClick = onOpen)
+                .pointerInput(entry.relPath) {
+                    // A long press starts a container drag; releasing it
+                    // without moving opens the row's existing menu instead.
+                    var moved = false
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { offset ->
+                            moved = false
+                            dragController.start(
+                                DragPayload(
+                                    relPaths = listOf(entry.relPath),
+                                    label = entry.name,
+                                    kind = DragKind.CONTAINER,
+                                ),
+                            )
+                            dragController.pointer = rowOrigin + offset
+                            // Cycle guard: the dragged container and its whole
+                            // subtree become invalid drop targets for this drag.
+                            scope.launch {
+                                val resolved = blockedResolver(entry.relPath)
+                                val current = dragController.payload
+                                if (current != null &&
+                                    current.kind == DragKind.CONTAINER &&
+                                    current.relPaths.firstOrNull() == entry.relPath
+                                ) {
+                                    dragController.blockedTargets = resolved
+                                }
+                            }
+                        },
+                        onDrag = { change, _ ->
+                            moved = true
+                            dragController.pointer = rowOrigin + change.position
+                        },
+                        onDragEnd = {
+                            if (moved) {
+                                dragController.drop()
+                            } else {
+                                // Long press held and released without travel:
+                                // open the row's existing menu instead.
+                                dragController.end()
+                                menuExpanded = true
+                            }
+                        },
+                        onDragCancel = {
+                            // A destination change (spring-loaded navigation)
+                            // disposes this row mid-gesture and cancels the
+                            // detector; the root-level tracker owns the session
+                            // now, so this must NOT open anything or tear it
+                            // down.
+                        },
+                    )
+                },
             leadingContent = { CoverThumbnail(entry, coverLoader) },
             headlineContent = {
                 Row(verticalAlignment = Alignment.CenterVertically) {

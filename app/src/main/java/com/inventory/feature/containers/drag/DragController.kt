@@ -6,8 +6,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 
-/** What a drag is carrying: the photos (relative paths) and the ghost label. */
-data class DragPayload(val relPaths: List<String>, val label: String)
+/** What a drag is carrying: photos (default) or a single container folder. */
+enum class DragKind { PHOTO, CONTAINER }
+
+/** What a drag is carrying: the kind, the relative paths and the ghost label. */
+data class DragPayload(
+    val relPaths: List<String>,
+    val label: String,
+    val kind: DragKind = DragKind.PHOTO,
+)
 
 /**
  * Session state of an in-progress drag: the payload, the current finger
@@ -22,6 +29,13 @@ class DragController {
     var targets by mutableStateOf<Map<String, Rect>>(emptyMap())
 
     /**
+     * Container paths that must not act as drop targets during the current
+     * drag: the dragged container itself plus its whole subtree (a move into
+     * the subtree would create a cycle). Empty for photo drags.
+     */
+    var blockedTargets by mutableStateOf<Set<String>>(emptySet())
+
+    /**
      * Drop resolver installed by the screen owning the targets: called on a
      * successful release with the payload and the hovered target id (`null`
      * when the release lands on no target). Resolution happens before the
@@ -31,6 +45,7 @@ class DragController {
 
     fun start(payload: DragPayload) {
         this.payload = payload
+        blockedTargets = emptySet()
         hoveredTarget = null
     }
 
@@ -46,6 +61,7 @@ class DragController {
         payload = null
         pointer = null
         hoveredTarget = null
+        blockedTargets = emptySet()
         return p
     }
 

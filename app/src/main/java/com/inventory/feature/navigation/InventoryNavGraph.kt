@@ -7,11 +7,15 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
@@ -26,6 +30,7 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.inventory.feature.containers.ContainerScreen
 import com.inventory.feature.containers.drag.DragController
+import com.inventory.feature.containers.drag.DragKind
 import com.inventory.feature.photos.CameraCaptureScreen
 import com.inventory.feature.photos.CoverCaptureScreen
 import com.inventory.feature.search.SearchScreen
@@ -41,7 +46,7 @@ import kotlin.math.roundToInt
  * directly in the root jumps to "inventory" (its relative path is empty,
  * so no container route exists for it).
  *
- * The whole graph sits inside a [Box] so an in-progress photo drag can be
+ * The whole graph sits inside a [Box] so an in-progress drag can be
  * represented by a floating ghost card above every destination; the
  * [DragController] session is shared with the container destination only.
  */
@@ -174,17 +179,29 @@ fun InventoryNavGraph(
                         .offset { IntOffset(point.x.roundToInt(), point.y.roundToInt()) }
                         .size(72.dp),
                 ) {
-                    Column(modifier = Modifier.padding(8.dp)) {
+                    Column(
+                        modifier = Modifier.padding(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        if (payload.kind == DragKind.CONTAINER) {
+                            Icon(
+                                imageVector = Icons.Outlined.Folder,
+                                contentDescription = null,
+                                modifier = Modifier.size(28.dp),
+                            )
+                        }
                         Text(
                             text = payload.label,
                             style = MaterialTheme.typography.labelMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        Text(
-                            text = payload.relPaths.size.toString(),
-                            style = MaterialTheme.typography.labelSmall,
-                        )
+                        if (payload.kind == DragKind.PHOTO) {
+                            Text(
+                                text = payload.relPaths.size.toString(),
+                                style = MaterialTheme.typography.labelSmall,
+                            )
+                        }
                     }
                 }
             }

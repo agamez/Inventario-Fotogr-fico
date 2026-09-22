@@ -454,6 +454,14 @@ class ContainerViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Invalid drop targets for a container drag: [containerRel] itself plus
+     * every descendant, so dropping never creates a folder cycle. Resolved
+     * once when the drag starts (the drag gesture is not a coroutine).
+     */
+    suspend fun blockedMoveTargets(containerRel: String): Set<String> =
+        store.descendantFolderPaths(containerRel).toSet()
+
     /** Moves the folder at [sourceRel] into the folder at [targetFolderRel]. */
     fun moveFolderTo(sourceRel: String, targetFolderRel: String) {
         val isSelf = sourceRel == folderRel
