@@ -2,6 +2,8 @@ package com.inventory.desktop
 
 import com.inventory.ai.VisionOutcome
 import com.inventory.desktop.exif.DesktopExifEditor
+import com.inventory.desktop.ui.DragKind
+import com.inventory.desktop.ui.DragPayload
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.File
@@ -117,7 +119,50 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
     report.check("fresh index counts for A", finalSnapshot.subtreeCounts["A"] == (0 to 1))
     report.check("fresh index counts for B renamed", finalSnapshot.subtreeCounts["B renamed"] == (0 to 1))
 
-    // 12. AI auto-label segment against an in-test loopback mock server
+    // 12. Drag resolution: the desktop dropDrag contract over a fresh subtree
+    //     (photo move, container subtree move, and the no-op targets). This is
+    //     the same entry point the Compose release handler calls.
+    val dragFolder = rebuilt.createFolder("", "Drag").first
+    val dragWest = dragFolder?.let { rebuilt.createFolder(it, "West").first }
+    val dragEast = dragFolder?.let { rebuilt.createFolder(it, "East").first }
+    report.check("drag tree created", dragFolder != null && dragWest != null && dragEast != null)
+    if (dragFolder != null && dragWest != null && dragEast != null) {
+        rebuilt.importPhoto(dragWest, syntheticJpeg(), "Drag photo", null)
+        val photoRel = "$dragWest/Drag photo.jpg"
+        val photoDrag = rebuilt.dropDrag(
+            DragPayload(listOf(photoRel), "Drag photo", DragKind.PHOTO),
+            dragEast,
+        )
+        report.check(
+            "drag photo moved into hovered container",
+            photoDrag &&
+                File(folder, "$dragEast/Drag photo.jpg").isFile &&
+                !File(folder, photoRel).exists(),
+        )
+        val subtreeDrag = rebuilt.dropDrag(
+            DragPayload(listOf(dragWest), "West", DragKind.CONTAINER),
+            dragEast,
+        )
+        report.check(
+            "drag container moved its subtree",
+            subtreeDrag &&
+                File(folder, "$dragEast/West").isDirectory &&
+                !File(folder, dragWest).exists(),
+        )
+        report.check(
+            "drag with no target is a no-op",
+            !rebuilt.dropDrag(DragPayload(listOf(dragEast), "East", DragKind.CONTAINER), null),
+        )
+        report.check(
+            "drag into own subtree is a no-op",
+            !rebuilt.dropDrag(
+                DragPayload(listOf(dragEast), "East", DragKind.CONTAINER),
+                "$dragEast/West",
+            ),
+        )
+    }
+
+    // 13. AI auto-label segment against an in-test loopback mock server
     //     (fully self-contained, no external services). The controller is
     //     reused: configure AI, stage one photo, await the suggestion,
     //     save it, then turn AI back off and tear the mock down.

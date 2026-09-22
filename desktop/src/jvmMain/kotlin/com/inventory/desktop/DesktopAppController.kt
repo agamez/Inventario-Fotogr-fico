@@ -6,6 +6,9 @@ import com.inventory.ai.VisionOutcome
 import com.inventory.desktop.exif.DesktopExifEditor
 import com.inventory.desktop.index.DesktopIndex
 import com.inventory.desktop.index.FolderWatcher
+import com.inventory.desktop.ui.ANCESTOR_TARGET_PREFIX
+import com.inventory.desktop.ui.DragKind
+import com.inventory.desktop.ui.DragPayload
 import com.inventory.storage.BackendEntry
 import com.inventory.storage.COVER_FILE_NAME
 import com.inventory.storage.ExifEditor
@@ -227,6 +230,50 @@ class DesktopAppController(
             if (!backend.moveFolder(folderRel, parentRel)) return@withContext Outcome.InvalidMoveTarget
             index.rebuild()
             Outcome.Moved
+        }
+    }
+
+    /**
+     * Invalid drop targets for a container drag: [rel] itself plus every
+     * descendant, resolved from disk (the drag gesture is not a coroutine,
+     * so this is computed once when the drag starts), mirroring the Android
+     * store's `descendantFolderPaths`.
+     */
+    suspend fun descendantFolders(rel: String): Set<String> = withContext(Dispatchers.IO) {
+        val source = rel.trimEnd('/')
+        if (source.isEmpty()) return@withContext emptySet()
+        val result = mutableSetOf(source)
+        val pending = ArrayDeque<String>()
+        pending += source
+        while (pending.isNotEmpty()) {
+            for (child in backend.listContainers(pending.removeFirst())) {
+                if (result.add(child.relPath)) pending += child.relPath
+            }
+        }
+        result
+    }
+
+    /**
+     * Resolves a released drag: maps [hoveredTarget] (an `"ancestor:<rel>"`
+     * chip or a container relative path) to its destination folder and
+     * performs the move through the existing ops. Returns whether a move
+     * happened — null targets, empty payloads, unchanged parents and drops
+     * into the dragged container's own subtree are refused.
+     */
+    suspend fun dropDrag(payload: DragPayload, hoveredTarget: String?): Boolean {
+        val destination = hoveredTarget?.removePrefix(ANCESTOR_TARGET_PREFIX) ?: return false
+        return when (payload.kind) {
+            DragKind.CONTAINER -> {
+                val source = payload.relPaths.firstOrNull()?.trimEnd('/') ?: return false
+                if (source.isEmpty()) return false
+                if (destination == source || destination.startsWith("$source/")) return false
+                moveFolder(source, destination) == Outcome.Moved
+            }
+
+            DragKind.PHOTO -> {
+                if (payload.relPaths.isEmpty()) return false
+                movePhotosTo(payload.relPaths, destination) == Outcome.Moved
+            }
         }
     }
 

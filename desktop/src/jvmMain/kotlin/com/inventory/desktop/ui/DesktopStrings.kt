@@ -24,6 +24,7 @@ object DesktopStrings {
     const val CONTAINERS_SECTION = "Containers"
     const val PHOTOS_SECTION = "Photos"
     const val ROOT_FOLDER_LABEL = "Inventory (root)"
+    const val MOVE_UP_HERE = "Move up one level"
     const val CONFLICT_BADGE = "Sync conflict"
     const val CONTAINER_OPTIONS = "Container options"
     const val SCANNING_LABEL = "Scanning…"
