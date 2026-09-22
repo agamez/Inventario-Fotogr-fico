@@ -21,9 +21,24 @@ class DragController {
     var hoveredTarget by mutableStateOf<String?>(null)
     var targets by mutableStateOf<Map<String, Rect>>(emptyMap())
 
+    /**
+     * Drop resolver installed by the screen owning the targets: called on a
+     * successful release with the payload and the hovered target id (`null`
+     * when the release lands on no target). Resolution happens before the
+     * session is torn down.
+     */
+    var onDrop: ((DragPayload, String?) -> Unit)? = null
+
     fun start(payload: DragPayload) {
         this.payload = payload
         hoveredTarget = null
+    }
+
+    /** Resolves the payload against the hovered target, then ends the session. */
+    fun drop() {
+        val p = payload
+        if (p != null) onDrop?.invoke(p, hoveredTarget)
+        end()
     }
 
     fun end(): DragPayload? {

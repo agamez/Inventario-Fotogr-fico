@@ -2,6 +2,7 @@ package com.inventory.feature.containers
 
 import android.Manifest
 import android.content.Intent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -75,7 +76,9 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -84,12 +87,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
@@ -113,6 +121,9 @@ import com.inventory.ui.rememberPreviewBitmap
 
 /** Maximum number of images the gallery picker may return at once. */
 private const val MAX_GALLERY_IMAGES = 10
+
+/** Ring/tint marking the container row currently under an in-flight photo drag. */
+private val DropHighlightColor = Color(0xFF009688)
 
 /**
  * The one browse screen of the filesystem inventory, used for the storage
@@ -159,6 +170,10 @@ fun ContainerScreen(
     val movableTargets by viewModel.movableTargets.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
+    val hapticFeedback = LocalHapticFeedback.current
+
+    // Drop-target ownership is per screen: the folder this screen addresses.
+    val dragOwner = viewModel.folderRel
 
     var searchExpanded by remember { mutableStateOf(false) }
     var showFabSheet by remember { mutableStateOf(false) }
@@ -213,6 +228,41 @@ fun ContainerScreen(
     LaunchedEffect(storage.ready) {
         if (storage.ready) viewModel.onStorageReady()
     }
+
+    // While a photo drag is in flight, keep the drop target under the ghost
+    // pointer current; moving off every row clears the highlight.
+    LaunchedEffect(dragController.pointer, dragController.targets) {
+        val point = dragController.pointer
+        if (dragController.payload == null || point == null) {
+            dragController.hoveredTarget = null
+            return@LaunchedEffect
+        }
+        val prefix = "$dragOwner|"
+        dragController.hoveredTarget = dragController.targets
+            .entries
+            .firstOrNull { (key, rect) -> key.startsWith(prefix) && rect.contains(point) }
+            ?.key
+            ?.substringAfter('|')
+    }
+
+    // Drop resolution: the row under the pointer wins, releasing anywhere
+    // else cancels. The snackbar comes from the ViewModel event.
+    SideEffect {
+        dragController.onDrop = { payload, target ->
+            if (target != null) {
+                hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
+                viewModel.movePhotosTo(payload.relPaths, target)
+            }
+        }
+    }
+
+    // Rows of this screen unregister their drop bounds when it leaves.
+    DisposableEffect(dragOwner) {
+        onDispose { dragController.clearTargets(dragOwner) }
+    }
+
+    // System back cancels an in-flight drag instead of leaving the screen.
+    BackHandler(enabled = dragController.payload != null) { dragController.end() }
 
     fun launchFileModeAccess() {
         val intent: Intent? = viewModel.fileModeIntent(context)
@@ -490,6 +540,15 @@ fun ContainerScreen(
                                         entry = entry,
                                         counts = uiState.childCounts[entry.relPath],
                                         coverLoader = viewModel::coverModel,
+                                        highlighted = dragController.payload != null &&
+                                            dragController.hoveredTarget == entry.relPath,
+                                        modifier = Modifier.onGloballyPositioned { coordinates ->
+                                            dragController.registerTarget(
+                                                dragOwner,
+                                                entry.relPath,
+                                                coordinates.boundsInRoot(),
+                                            )
+                                        },
                                         onOpen = { onOpenContainer(entry.relPath) },
                                         onRename = { rel, name -> folderToRename = RenameTarget(rel, name) },
                                         onMove = { rel ->
@@ -1105,18 +1164,29 @@ private fun ContainerRow(
     entry: CacheEntry,
     counts: ChildCounts?,
     coverLoader: suspend (String) -> Any?,
+    highlighted: Boolean,
     onOpen: () -> Unit,
     onRename: (String, String) -> Unit,
     onMove: (String) -> Unit,
     onSetPhoto: (String) -> Unit,
     onRemovePhoto: (String) -> Unit,
     onDelete: (String, String) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
-    Box {
+    Box(modifier = modifier) {
         ListItem(
             modifier = Modifier
                 .fillMaxWidth()
+                .then(
+                    if (highlighted) {
+                        Modifier
+                            .background(DropHighlightColor.copy(alpha = 0.12f))
+                            .border(2.dp, DropHighlightColor)
+                    } else {
+                        Modifier
+                    },
+                )
                 .combinedClickable(
                     onClick = onOpen,
                     onLongClick = { menuExpanded = true },
@@ -1464,9 +1534,13 @@ private fun PhotoTile(
 ) {
     // A long press that turns into a drag must not also enter selection mode.
     var dragJustEnded by remember { mutableStateOf(false) }
+    // Gesture coordinates are local to this tile; the session (ghost + drop
+    // targets) speaks root coordinates, so the tile origin translates them.
+    var tileOrigin by remember { mutableStateOf(Offset.Zero) }
     Box(
         modifier = Modifier
             .aspectRatio(1f)
+            .onGloballyPositioned { tileOrigin = it.boundsInRoot().topLeft }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = { if (!dragJustEnded) onLongClick() },
@@ -1481,11 +1555,13 @@ private fun PhotoTile(
                                 label = photo.description ?: photo.name,
                             ),
                         )
-                        dragController.pointer = offset
+                        dragController.pointer = tileOrigin + offset
                     },
-                    onDrag = { change, _ -> dragController.pointer = change.position },
+                    onDrag = { change, _ ->
+                        dragController.pointer = tileOrigin + change.position
+                    },
                     onDragEnd = {
-                        dragController.end()
+                        dragController.drop()
                         dragJustEnded = false
                     },
                     onDragCancel = {

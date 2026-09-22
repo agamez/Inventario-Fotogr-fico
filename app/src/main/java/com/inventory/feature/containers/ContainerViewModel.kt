@@ -684,10 +684,18 @@ class ContainerViewModel @Inject constructor(
 
     /** Moves every selected photo into [targetFolderRel]; confirmation is in the UI. */
     fun moveSelected(targetFolderRel: String) {
-        val paths = _selectedPaths.value.toList()
-        if (paths.isEmpty()) return
+        movePhotosTo(_selectedPaths.value.toList(), targetFolderRel)
+    }
+
+    /**
+     * Moves the given photo files into [targetFolderRel] — the explicit-path
+     * form used by drag-and-drop, which resolves its payload without a
+     * selection.
+     */
+    fun movePhotosTo(relPaths: List<String>, targetFolderRel: String) {
+        if (relPaths.isEmpty()) return
         viewModelScope.launch {
-            val moved = store.movePhotos(paths, targetFolderRel)
+            val moved = store.movePhotos(relPaths, targetFolderRel)
             scanner.rescan()
             clearSelection()
             sendEvent(R.string.photos_moved, listOf(moved))
