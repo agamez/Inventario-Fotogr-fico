@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ServerSocket needs INTERNET; without it the process crashes (EPERM). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application />
+
+    <instrumentation
+        android:name=".DumpServerInstrumentation"
+        android:targetPackage="com.inventory.dumpserver"
+        android:functionalTest="true" />
+
+</manifest>

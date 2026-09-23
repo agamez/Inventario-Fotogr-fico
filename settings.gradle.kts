@@ -18,3 +18,4 @@ rootProject.name = "PhotoInventory"
 include(":app")
 include(":shared")
 include(":desktop")
+include(":dumpserver")

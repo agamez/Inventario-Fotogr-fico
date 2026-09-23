@@ -30,8 +30,58 @@ Status tracker for speeding up the verification gates. Measured 2026-09-03 on em
 - [x] Policy (AGENTS.md): **one full harness run per change**; two consecutive runs only for harness-infrastructure changes or milestone gates.
 - Expected: ~35 → ~22–25 min.
 
-### Stage 2 — Kill the dump tax — **RE-OPENED 2026-09-23 (was ABANDONED on contaminated evidence)**
-NOTE: the abandonment below was based on runs contaminated by the animations-off wedge (Stage 1, above): the legacy runs of that same window failed identically, so the wedge was never a dump-server problem. With animations restored (464/0/4 re-confirmed), the persistent dump server is UNPROVEN, not disproven — re-evaluation scheduled.
+### Stage 2 — Kill the dump tax — **DONE 2026-09-23**
+
+Final resolution 2026-09-23: the standalone `:dumpserver` was rebuilt to the same design (one
+persistent `UiAutomation`, uiautomator-compatible XML over a loopback socket, `adb forward`) and
+the harness rewired to the socket fast path, keeping the legacy one-shot dump as the automatic
+fallback and the `PHOTOINV_DUMP_SERVER=0` kill-switch. The one blocker the clean re-evaluation
+had isolated — the camera shutter race — is fixed in the harness: `camera_capture` re-taps the
+shutter (up to 3×, 6 s dialog wait per attempt) when the first tap is swallowed. Two consecutive
+full runs then landed **468 passed / 0 failed / 0 warnings** in **673 s** and **671 s**
+(~11.2 min vs the ~35 min legacy baseline), with the dump server active throughout. The four
+soft snackbar checks that used to warn now pass as well (fast dumps catch the transient
+snackbar), so the counts read 468/0/0 instead of 464/0/4.
+
+The clean re-evaluation below (kept for the record) proved the server itself correct and named
+the only remaining defect, the camera-timing race:
+
+Clean re-evaluation 2026-09-23 (animations at their defaults — the harness never touches the
+scales): the standalone `:dumpserver` was rebuilt exactly as specified and run twice
+back-to-back. Both runs produced **319 passed / 82 failed / 1 warning** (845 s and 847 s) with
+a byte-identical failure set. The persistent connection was **not** the bare-DecorView wedge:
+it served correct, complete trees (the contamination note below stands), and the late-AI
+blank-guard scenario it once poisoned passed cleanly in both runs (AI 59/59). The regression was
+a **camera-flow timing race that the fast dump exposes**:
+
+- `camera_capture` taps the in-app shutter the moment its `content-desc="Take photo"` node
+  appears. With ~150 ms socket dumps that tap lands ~2 s before the CameraX pipeline is
+  capture-ready, so the capture is swallowed and the app stays on the camera screen. The
+  shutter node already reports `enabled="true"`/`clickable="true"`, so the harness cannot tell
+  "shown" from "ready". The legacy `uiautomator dump` path (~1.9 s/call) accidentally masks the
+  race by delaying the tap long enough for the camera to bind.
+- A/B cold-app proof: forcing the legacy path (`PHOTOINV_DUMP_SERVER=0`) makes the same
+  cold-app `camera_capture` pass 4/4 (32 s), while the socket path fails deterministically;
+  retapping the identical shutter node after 3 s succeeds. `UiAutomation.waitForIdle` before
+  each read was tried and does not help (the camera screen is a11y-idle while the hardware
+  initialises).
+- The fix therefore retries the shutter instead of re-adding ~2 s of latency to every dump. That
+  retry (already in the harness) is the only camera-path change between the failing re-eval runs
+  and the two green runs above.
+
+One serializer-fidelity point surfaced by the green runs: an empty `EditText` exposes `text=""`,
+so the server omits only truly **null** attributes, not empty strings. Omitting empty strings
+made two checks (`note field prefilled empty`, `disabled dialog leaves the description empty`)
+read `None` instead of `""`; emitting the empty attribute restores parity with `uiautomator dump`.
+
+History (kept for the record): the Stage 2 code was implemented and reverted once before on
+evidence contaminated by the Stage 1 animations-off wedge. The notes below predate the clean
+re-evaluation above; where they blame the persistent connection for the bare-tree wedge, that
+is superseded — the bare tree was the animations-off Stage 1 artifact, and the only Stage 2
+defect that survived the clean re-evaluation was the camera-timing race described above, which
+the harness shutter retry now fixes.
+
+NOTE: the earlier abandonment was based on runs contaminated by the animations-off wedge (Stage 1, above): the legacy runs of that same window failed identically, so the wedge was never a dump-server problem. With animations restored (464/0/4 re-confirmed), the persistent dump server was UNPROVEN, not disproven — hence this clean re-evaluation, which now settles it.
 - [x] Persistent dump server: instrumentation keeps one `UiAutomation` alive and serves
   uiautomator-compatible XML over a loopback socket (adb forward). Dump cost ~2 s → ~50–100 ms,
   so full runs landed at **~10–12 min** (vs the ~35 min baseline).
@@ -97,15 +147,29 @@ never hit); it changes no assertion, only the failure-dump filename.
 | 2026-09-23 | Stage 2 + standalone `:dumpserver` process | 730 s (~12.2 min) | 386 passed, 35 failed — wedge unchanged, Stage 2 reverted |
 | 2026-09-23 | Stage 2 reverted → legacy dump (run A, clean boot) | 2077 s (~34.6 min) | 459 passed, 5 failed, 4 warnings |
 | 2026-09-23 | Stage 2 reverted → legacy dump (run B) | 2001 s (~33.4 min) | 382 passed, 35 failed, 4 warnings |
+| 2026-09-23 | Stage 2 **re-eval**, standalone `:dumpserver`, animations ON (run A) | 845 s (~14.1 min) | 319 passed, 82 failed, 1 warning — camera shutter race |
+| 2026-09-23 | Stage 2 **re-eval**, standalone `:dumpserver`, animations ON (run B) | 847 s (~14.1 min) | 319 passed, 82 failed, 1 warning — identical failure set; superseded below |
+| 2026-09-23 | Stage 2 **reverted** → legacy dump, animations ON (confirmation A) | 2093 s (~34.9 min) | 464 passed, 0 failed, 4 warnings |
+| 2026-09-23 | Stage 2 **reverted** → legacy dump, animations ON (confirmation B) | 2077 s (~34.6 min) | 464 passed, 0 failed, 4 warnings |
+| 2026-09-23 | Stage 2 **DONE** — rebuilt `:dumpserver` + harness shutter retry (run A) | 673 s (~11.2 min) | **468 passed, 0 failed, 0 warnings** |
+| 2026-09-23 | Stage 2 **DONE** — rebuilt `:dumpserver` + harness shutter retry (run B) | 671 s (~11.2 min) | **468 passed, 0 failed, 0 warnings** |
 
-Across the Stage 2 rows the run-to-run spread (8 vs 35 failures) is emulator frame/timing jitter:
-the failing set is always the late-AI-reply blank-guard (`blank-guard: typed description survives
-the late reply`, `blank-guard: empty note still pre-filled`, then the guarded-photo disk/EXIF
-checks) plus the downstream final-audit rows for that missing photo; the lucky runs additionally
-passed the queue, covers, drag-and-drop and PC-edit scenarios cleanly. The reverted legacy runs
-below show the same intermittent bare-tree wedge, so it is not a dump-server artifact.
+The rows through the 2026-09-23 standalone-process one are the contaminated window (Stage 1
+animations off): their failing set is the late-AI-reply blank-guard cascade, and the bare tree
+they saved was the animations-off artifact, not a dump-server defect. The two Stage 2 **re-eval**
+rows are the clean measurement (animations at defaults): the failure set is instead the
+camera-capture race described under Stage 2 — 82 failures, byte-identical across both runs, with
+the late-AI scenario green. The two **confirmation** rows re-run the restored legacy path with
+animations at defaults and reproduce the green baseline (464/0/4). The two bottom **DONE** rows
+are the final Stage 2 state: server rebuilt, shutter retry in the harness, both runs green at
+468/0/0 with the dump server active, and ~3× faster than the legacy baseline.
 
 ### Stability loop — outcome 2026-09-23
+
+Historical (superseded by the Stage 2 **DONE** outcome above): this section records the
+abandoned/reverted window. The "bare DecorView wedge" it blames on the persistent connection was
+the Stage 1 animations-off artifact, and the residual failures it lists were the camera-shutter
+race, not a dump-server defect.
 
 The DUMP handler sampled the tree twice 150 ms apart and only returned once two serializations
 were byte-identical (cap 1.6 s, then the last read regardless); stable screens cost

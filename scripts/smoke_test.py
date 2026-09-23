@@ -43,7 +43,7 @@ removes any stale /sdcard/PhotoInventory tree, seeds the gallery, so the
 run is deterministic. Exits non-zero on failure; soft warnings are
 allowed only for the documented queued-snackbar checks.
 """
-import base64, io, os, re, subprocess, sys, tempfile, time, warnings
+import base64, io, os, re, socket, subprocess, sys, tempfile, time, warnings
 import xml.etree.ElementTree as ET
 
 ADB = os.path.expanduser("~/Android/Sdk/platform-tools/adb")
@@ -230,8 +230,123 @@ def pixel_key(data):
 LAST_RAW = ""
 DUMPDIR = "/tmp/smoke_dumps"
 
-def dump():
-    global LAST_RAW
+# ---- persistent dump server (docs/test-optimization-plan.md, Stage 2) -------
+# A self-instrumenting `:dumpserver` APK keeps one UiAutomation alive and
+# serves uiautomator-style XML over a loopback socket (`adb forward`). The
+# legacy one-shot `uiautomator dump` stays as the fallback. Set
+# PHOTOINV_DUMP_SERVER=0 to force the legacy path.
+DUMP_PORT = 5291
+DUMP_PKG = "com.inventory.dumpserver"
+DUMP_APK = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "dumpserver/build/outputs/apk/debug/dumpserver-debug.apk")
+DUMP_SERVER_LOG = "/tmp/dump_server.log"
+_dump_server_proc = None
+_dump_server_active = False
+
+def _dump_recv_exact(sock, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = sock.recv(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+def _dump_ping(timeout=3.0):
+    try:
+        with socket.create_connection(("127.0.0.1", DUMP_PORT), timeout=timeout) as s:
+            s.settimeout(timeout)
+            s.sendall(b"PING\n")
+            return s.recv(16).strip() == b"PONG"
+    except OSError:
+        return False
+
+def _dump_socket(timeout=5.0):
+    """One DUMP round trip; the XML string, or None on ANY socket failure."""
+    try:
+        with socket.create_connection(("127.0.0.1", DUMP_PORT), timeout=2.0) as s:
+            s.settimeout(timeout)
+            s.sendall(b"DUMP\n")
+            header = _dump_recv_exact(s, 4)
+            if header is None:
+                return None
+            payload = _dump_recv_exact(s, int.from_bytes(header, "big"))
+            if payload is None:
+                return None
+            return payload.decode("utf-8", "replace")
+    except OSError:
+        return None
+
+def start_dump_server():
+    """Install/forward/launch the dump server; ready once PING answers.
+    A separate package from com.inventory, so it survives pm clear."""
+    global _dump_server_proc, _dump_server_active
+    if os.environ.get("PHOTOINV_DUMP_SERVER") == "0":
+        return False
+    if _dump_ping():
+        _dump_server_active = True
+        return True
+    if not sh(f"pm path {DUMP_PKG}"):
+        if not os.path.exists(DUMP_APK):
+            return False
+        adb("install", "-r", DUMP_APK, timeout=120)
+    sh(f"am force-stop {DUMP_PKG}")  # clear a half-dead prior instrumentation
+    adb("forward", f"tcp:{DUMP_PORT}", f"tcp:{DUMP_PORT}")
+    _dump_server_proc = subprocess.Popen(
+        [ADB] + (["-s", SERIAL] if SERIAL else []) +
+        ["shell", "am", "instrument", "-w", "-e", "port", str(DUMP_PORT),
+         f"{DUMP_PKG}/.DumpServerInstrumentation"],
+        stdout=open(DUMP_SERVER_LOG, "w"), stderr=subprocess.STDOUT)
+    end = time.time() + 15
+    while time.time() < end:
+        if _dump_ping():
+            _dump_server_active = True
+            return True
+        time.sleep(0.3)
+    return False
+
+def _restart_dump_server():
+    stop_dump_server()
+    time.sleep(0.5)
+    return start_dump_server()
+
+def stop_dump_server():
+    """QUIT + reap the instrumentation + drop the adb forward."""
+    global _dump_server_proc, _dump_server_active
+    if _dump_server_proc is not None or _dump_ping():
+        try:
+            with socket.create_connection(("127.0.0.1", DUMP_PORT), timeout=2.0) as s:
+                s.settimeout(3.0)
+                s.sendall(b"QUIT\n")
+                try:
+                    s.recv(16)  # hold the connection open until the server reads it
+                except OSError:
+                    pass
+        except OSError:
+            pass
+    if _dump_server_proc is not None:
+        try:
+            _dump_server_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _dump_server_proc.kill()
+        _dump_server_proc = None
+    adb("forward", "--remove", f"tcp:{DUMP_PORT}")
+    _dump_server_active = False
+
+def _socket_dump():
+    """Socket dump with the empty-tree retry loop; None on failure/empty."""
+    for _ in range(3):
+        out = _dump_socket()
+        if out is None:
+            return None
+        if "<hierarchy" in out and out.strip() != "<hierarchy/>":
+            return out
+        time.sleep(0.1)
+    return None
+
+def _legacy_dump():
+    """The pre-Stage-2 one-shot path, kept verbatim as the fallback."""
     sh("rm -f /sdcard/ui.xml")
     sh("uiautomator dump /sdcard/ui.xml >/dev/null 2>&1")
     out = sh("cat /sdcard/ui.xml")
@@ -241,6 +356,20 @@ def dump():
         time.sleep(1.0)
         sh("uiautomator dump /sdcard/ui.xml >/dev/null 2>&1")
         out = sh("cat /sdcard/ui.xml")
+    return out
+
+def dump():
+    global LAST_RAW, _dump_server_active
+    out = None
+    if _dump_server_active:
+        out = _socket_dump()
+        if out is None:  # ANY socket failure: one restart attempt
+            if _restart_dump_server():
+                out = _socket_dump()
+            else:
+                _dump_server_active = False
+    if out is None:
+        out = _legacy_dump()
     LAST_RAW = out
     try:
         return ET.fromstring(out) if "<hierarchy" in out else None
@@ -747,8 +876,18 @@ def camera_capture(description, note=None, where=""):
         if find_all(d, desc="Take photo"): break
         time.sleep(1.0)
     if not check_shutter(where): return False
-    time.sleep(2.0)
-    ok = wait_for(text="Description (required)", timeout=10) is not None
+    # CameraX needs a moment to bind; with fast dumps the shutter tap can land
+    # before the capture is armed and get swallowed — re-tap up to 3x
+    # (docs/test-optimization-plan.md, Stage 2 re-evaluation).
+    ok = False
+    for _attempt in range(3):
+        if wait_for(text="Description (required)", timeout=6) is not None:
+            ok = True; break
+        time.sleep(1.0)
+        if not tap_desc("Take photo", timeout=4):
+            if find_all(dump(), text="Description (required)"):
+                ok = True  # dialog appeared late; shutter already behind it
+            break
     check(f"capture save dialog [{where}]", ok)
     if not ok: return False
     fields = edit_texts()
@@ -2248,6 +2387,9 @@ def main():
     sh("am force-stop com.google.android.calendar")
     sh("pm disable-user --user 0 com.google.android.calendar")
     sh("pkill -f uiautomator >/dev/null 2>&1")  # clear any wedged dump service
+    # Stage 2 (docs/test-optimization-plan.md): the persistent socket dump
+    # replaces the per-poll uiautomator one-shot; legacy stays as fallback.
+    print(f"Dump server: {'active' if start_dump_server() else 'legacy (fallback)'}")
     sh(f"am force-stop {PKG}")
     # --- scenario 0 FIRST, on a fresh data dir with NOTHING granted: pm
     # clear does NOT reset a set MANAGE_EXTERNAL_STORAGE appops on this
@@ -2286,6 +2428,7 @@ def main():
     t_ai_autolabel()
     t_drag_drop()
     t_disk_final()
+    stop_dump_server()
     print(f"\n===== {passed} passed, {failed} failed, {len(soft_warnings)} warnings =====")
     print(f"Total duration: {time.time() - MAIN_T0:.0f}s")
     print("Per-scenario (passed/total):")
