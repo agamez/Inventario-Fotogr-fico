@@ -449,7 +449,11 @@ def check(name, cond, detail="", soft=False):
     failed += 1; failures.append(name); tally[CUR][1] += 1
     print(f"  FAIL  {name}  {detail}")
     os.makedirs(DUMPDIR, exist_ok=True)
-    with open(f"{DUMPDIR}/{failed:02d}_{name.replace(' ', '_').replace('->', '_')}.xml", "w") as fh:
+    # Check names carry path separators (e.g. "disk: Attic shelf/x.jpg"); keep
+    # the failure-dump write from failing on them so a failing run still
+    # completes and records every raw tree.
+    safe = re.sub(r"[^A-Za-z0-9._-]", "_", name)
+    with open(f"{DUMPDIR}/{failed:02d}_{safe}.xml", "w") as fh:
         fh.write(LAST_RAW)
 
 def snackbar_visible(fragment, timeout=5.0):
