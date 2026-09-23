@@ -2241,8 +2241,10 @@ def main():
     # Stage 1 (docs/test-optimization-plan.md): animations off — dialogs/sheets
     # appear instantly on the software-rendered emulator, so poll-based waits
     # return sooner.
-    for _key in ("window_animation_scale", "transition_animation_scale", "animator_duration_scale"):
-        sh(f"settings put global {_key} 0.0")
+    # NOTE (docs/test-optimization-plan.md): zeroing animation scales was tried
+    # (Stage 1) and REVERTED — it causes bare-DecorView accessibility wedges
+    # (windows transition instantly, a11y tree updates are missed), which
+    # poisoned 5 harness runs. Animations stay at 1.0; do not zero them.
     sh("am force-stop com.google.android.calendar")
     sh("pm disable-user --user 0 com.google.android.calendar")
     sh("pkill -f uiautomator >/dev/null 2>&1")  # clear any wedged dump service
