@@ -30,7 +30,8 @@ Status tracker for speeding up the verification gates. Measured 2026-09-03 on em
 - [x] Policy (AGENTS.md): **one full harness run per change**; two consecutive runs only for harness-infrastructure changes or milestone gates.
 - Expected: ~35 → ~22–25 min.
 
-### Stage 2 — Kill the dump tax — **ABANDONED 2026-09-23**
+### Stage 2 — Kill the dump tax — **RE-OPENED 2026-09-23 (was ABANDONED on contaminated evidence)**
+NOTE: the abandonment below was based on runs contaminated by the animations-off wedge (Stage 1, above): the legacy runs of that same window failed identically, so the wedge was never a dump-server problem. With animations restored (464/0/4 re-confirmed), the persistent dump server is UNPROVEN, not disproven — re-evaluation scheduled.
 - [x] Persistent dump server: instrumentation keeps one `UiAutomation` alive and serves
   uiautomator-compatible XML over a loopback socket (adb forward). Dump cost ~2 s → ~50–100 ms,
   so full runs landed at **~10–12 min** (vs the ~35 min baseline).
