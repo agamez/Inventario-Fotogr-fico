@@ -507,6 +507,148 @@ fun SettingsDialog(
     )
 }
 
+/**
+ * The "AI tidy-up" review dialog, the desktop twin of Android's full-screen
+ * tidy sheet: preview, cursor progress ("3 / 7"), a blank-guarded pre-fill
+ * from the AI suggestion (description required, note optional), an inline
+ * key-free failure reason with Retry, and Apply/Skip/Cancel. A null item
+ * means the initial scan is still running and only a spinner is shown.
+ */
+@Composable
+fun TidyUpDialog(
+    controller: DesktopAppController,
+    state: DesktopAppController.TidyState,
+    onApply: (String, String?) -> Unit,
+    onSkip: () -> Unit,
+    onRetry: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    val item = state.queue.getOrNull(state.index)
+    Dialog(onDismissRequest = onCancel) {
+        Column(modifier = Modifier.width(560.dp).padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(DesktopStrings.TIDY_TITLE, style = MaterialTheme.typography.titleLarge)
+                Spacer(Modifier.weight(1f))
+                if (state.queue.isNotEmpty()) {
+                    Text(
+                        text = DesktopStrings.TIDY_PROGRESS.format(state.index + 1, state.queue.size),
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            if (item == null) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 24.dp),
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text(DesktopStrings.TIDY_SCANNING, style = MaterialTheme.typography.bodyLarge)
+                }
+                Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                    TextButton(onClick = onCancel) { Text(DesktopStrings.TIDY_CANCEL) }
+                }
+                return@Column
+            }
+            var description by remember(item.relPath) { mutableStateOf("") }
+            var note by remember(item.relPath) { mutableStateOf("") }
+            // Blank-guarded pre-fill: a late AI reply never overwrites text
+            // the user already typed into either field.
+            LaunchedEffect(item.relPath, state.suggestion) {
+                val merged = mergedPreFill(description, note, state.suggestion)
+                description = merged.description
+                note = merged.note
+            }
+            ImageTile(
+                file = photoFileOf(controller, item.relPath),
+                size = 240.dp,
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = description,
+                onValueChange = { description = it },
+                label = { Text(DesktopStrings.DESCRIPTION_LABEL) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = note,
+                onValueChange = { note = it },
+                label = { Text(DesktopStrings.NOTE_LABEL) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            TidySuggestionStatus(state.suggestion, onRetry)
+            Spacer(Modifier.height(16.dp))
+            Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                TextButton(onClick = onCancel) { Text(DesktopStrings.TIDY_CANCEL) }
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(onClick = onSkip, enabled = !state.applying) {
+                    Text(DesktopStrings.TIDY_SKIP)
+                }
+                Spacer(Modifier.width(8.dp))
+                Button(
+                    enabled = description.isNotBlank() && !state.applying,
+                    onClick = { onApply(description, note.ifBlank { null }) },
+                ) { Text(DesktopStrings.TIDY_APPLY) }
+            }
+        }
+    }
+}
+
+/**
+ * The tidy dialog's AI line: a spinner while the suggestion is in flight,
+ * "ready" on success and the key-free failure reason plus a Retry button
+ * otherwise.
+ */
+@Composable
+private fun TidySuggestionStatus(suggestion: VisionOutcome?, onRetry: () -> Unit) {
+    when (suggestion) {
+        null -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = DesktopStrings.AI_SUGGESTION_THINKING,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        is VisionOutcome.Suggested -> Text(
+            text = DesktopStrings.AI_SUGGESTION_READY,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+
+        is VisionOutcome.Failed -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = DesktopStrings.AI_SUGGESTION_FAILED,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    text = suggestion.reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onRetry) { Text(DesktopStrings.TIDY_RETRY) }
+        }
+    }
+}
+
 /** The photo file behind a dialog preview, refreshed with the index. */
 @Composable
 private fun photoFileOf(controller: DesktopAppController, rel: String): java.io.File? {

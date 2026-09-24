@@ -101,6 +101,18 @@ object DesktopStrings {
     const val AI_SUGGESTION_READY = "AI suggestion ready"
     const val AI_SUGGESTION_FAILED = "AI suggestion failed"
 
+    // AI tidy-up (mirrors Android's tidy_* resources)
+    const val TIDY_TITLE = "AI tidy-up"
+    const val TIDY_PROGRESS = "%1\$d / %2\$d"
+    const val TIDY_APPLY = "Apply"
+    const val TIDY_SKIP = "Skip"
+    const val TIDY_CANCEL = "Cancel"
+    const val TIDY_RETRY = "Retry"
+    const val TIDY_DONE = "Tidied %1\$d, skipped %2\$d"
+    const val TIDY_NOTHING = "Nothing to tidy — no camera-generated names found"
+    const val TIDY_NEED_AI = "Enable AI in Settings first"
+    const val TIDY_SCANNING = "Scanning…"
+
     // Delete confirmations (mode-dependent: trash wording when the switch is
     // on, the pre-trash permanent wording when it is off)
     const val DELETE_CONTAINER_TITLE = "Delete container?"

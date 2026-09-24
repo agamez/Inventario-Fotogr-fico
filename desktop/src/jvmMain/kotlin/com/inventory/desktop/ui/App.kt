@@ -120,6 +120,8 @@ fun App(controller: DesktopAppController) {
     val aiSettings by controller.aiSettings.collectAsState()
     val aiSuggestions by controller.aiSuggestions.collectAsState()
     val trashEnabled by controller.trashEnabled.collectAsState()
+    val tidyState by controller.tidyState.collectAsState()
+    val tidySummary by controller.tidySummary.collectAsState()
     val scope = rememberCoroutineScope()
 
     val dragController = remember { DragController() }
@@ -157,6 +159,13 @@ fun App(controller: DesktopAppController) {
             delay(MESSAGE_MILLIS)
             message = null
         }
+    }
+
+    // A tidy session that ends (Cancel or the last item) reports its counts once.
+    LaunchedEffect(tidySummary) {
+        val summary = tidySummary ?: return@LaunchedEffect
+        message = DesktopStrings.TIDY_DONE.format(summary.applied, summary.skipped)
+        controller.acknowledgeTidySummary()
     }
 
     val folderRel = selectedFolder ?: ""
@@ -367,6 +376,13 @@ fun App(controller: DesktopAppController) {
                         } catch (exception: java.io.IOException) {
                             DesktopStrings.REPORT_EXPORT_FAILED
                         }
+                    }
+                },
+                onTidyUp = {
+                    when (controller.startTidyUp()) {
+                        DesktopAppController.TidyStart.STARTED -> {}
+                        DesktopAppController.TidyStart.NOTHING -> message = DesktopStrings.TIDY_NOTHING
+                        DesktopAppController.TidyStart.NEED_AI -> message = DesktopStrings.TIDY_NEED_AI
                     }
                 },
             )
@@ -687,6 +703,26 @@ fun App(controller: DesktopAppController) {
             )
         }
 
+        tidyState?.let { state ->
+            TidyUpDialog(
+                controller = controller,
+                state = state,
+                onApply = { description, note ->
+                    scope.launch {
+                        when (controller.applyTidy(description, note)) {
+                            DesktopAppController.Outcome.Saved -> {}
+                            DesktopAppController.Outcome.BlankName ->
+                                message = DesktopStrings.MSG_ERROR_BLANK_DESCRIPTION
+                            else -> message = DesktopStrings.MSG_ERROR_INVALID_IMAGE
+                        }
+                    }
+                },
+                onSkip = { controller.skipTidy() },
+                onRetry = { controller.describeCurrentTidyItem() },
+                onCancel = { controller.cancelTidy() },
+            )
+        }
+
         if (showSettings) {
             SettingsDialog(
                 controller = controller,
@@ -718,6 +754,7 @@ private fun TopBar(
     onToggleTrash: () -> Unit,
     onOpenSettings: () -> Unit,
     onExportReport: () -> Unit,
+    onTidyUp: () -> Unit,
 ) {
     Surface(tonalElevation = 2.dp) {
         Row(
@@ -763,6 +800,7 @@ private fun TopBar(
                 )
             }
             TextButton(onClick = onExportReport) { Text(DesktopStrings.EXPORT_REPORT) }
+            TextButton(onClick = onTidyUp) { Text(DesktopStrings.TIDY_TITLE) }
             IconButton(onClick = onToggleTrash) {
                 Icon(
                     imageVector = if (showTrash) Icons.Filled.Close else Icons.Filled.Delete,

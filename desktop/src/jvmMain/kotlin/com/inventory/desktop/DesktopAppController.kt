@@ -128,6 +128,45 @@ class DesktopAppController(
      */
     val aiSuggestions: StateFlow<Map<Long, VisionOutcome>> = _aiSuggestions.asStateFlow()
 
+    /**
+     * One photo whose name still looks camera-generated, awaiting an AI
+     * tidy-up suggestion and the user's review.
+     */
+    data class TidyItem(val relPath: String, val name: String)
+
+    /**
+     * A running "AI tidy-up" session: the [queue] of vague photos, the
+     * cursor [index], the current AI [suggestion] (null while it is being
+     * fetched) and whether a metadata write is in flight. [scanning] is
+     * kept for parity with Android (the desktop index scan is instant).
+     */
+    data class TidyState(
+        val queue: List<TidyItem>,
+        val index: Int,
+        val suggestion: VisionOutcome?,
+        val applying: Boolean,
+        val scanning: Boolean = false,
+    )
+
+    /** Counts shown when a tidy session ends (applied vs skipped). */
+    data class TidySummary(val applied: Int, val skipped: Int)
+
+    /** How [startTidyUp] finished: a session opened, or why it did not. */
+    enum class TidyStart { STARTED, NOTHING, NEED_AI }
+
+    private val _tidyState = MutableStateFlow<TidyState?>(null)
+
+    /** The active tidy session, or null when none is open. */
+    val tidyState: StateFlow<TidyState?> = _tidyState.asStateFlow()
+
+    private val _tidySummary = MutableStateFlow<TidySummary?>(null)
+
+    /** The last session's counts, consumed by the UI with [acknowledgeTidySummary]. */
+    val tidySummary: StateFlow<TidySummary?> = _tidySummary.asStateFlow()
+
+    private var tidyApplied = 0
+    private var tidySkipped = 0
+
     /** The persisted AI auto-label settings, observed by the settings dialog. */
     val aiSettings: StateFlow<AiSettings> = config.aiSettings
 
@@ -649,6 +688,124 @@ class DesktopAppController(
 
     // endregion
 
+    // region ai tidy-up
+
+    /**
+     * Starts an "AI tidy-up" session over every indexed photo whose name
+     * still looks camera-generated. The index scan is local and instant;
+     * [TidyStart.NOTHING] means there is nothing to do and
+     * [TidyStart.NEED_AI] means the feature is off or has no model (no
+     * request is made in either case).
+     */
+    fun startTidyUp(): TidyStart {
+        if (_tidyState.value != null) return TidyStart.STARTED
+        val vague = index.snapshot.value.allPhotos
+            .filter { Filenames.isCameraGenerated(it.name) }
+            .map { TidyItem(it.relPath, it.name) }
+        if (vague.isEmpty()) return TidyStart.NOTHING
+        if (aiConfig() == null) return TidyStart.NEED_AI
+        tidyApplied = 0
+        tidySkipped = 0
+        _tidyState.value = TidyState(vague, 0, suggestion = null, applying = false)
+        describeCurrentTidyItem()
+        return TidyStart.STARTED
+    }
+
+    /**
+     * Asks the model to label the current tidy item and parks the (possibly
+     * failed) outcome in [tidyState] for the review dialog; a failure is
+     * rendered inline so the user can Skip or Retry. A reply that lands
+     * after the cursor moved on is dropped.
+     */
+    fun describeCurrentTidyItem() {
+        val state = _tidyState.value ?: return
+        val item = state.queue.getOrNull(state.index) ?: return
+        val visionConfig = aiConfig()
+        if (visionConfig == null) {
+            _tidyState.update { it?.copy(suggestion = VisionOutcome.Failed(MODEL_NOT_CONFIGURED)) }
+            return
+        }
+        scope.launch {
+            _tidyState.update { current ->
+                if (current != null && current.queue === state.queue && current.index == state.index) {
+                    current.copy(suggestion = null)
+                } else {
+                    current
+                }
+            }
+            val bytes = backend.readPhotoBytes(item.relPath)
+            val outcome = if (bytes == null) {
+                VisionOutcome.Failed(TIDY_UNREADABLE_REASON)
+            } else {
+                VisionClient(visionConfig).describe(bytes)
+            }
+            _tidyState.update { current ->
+                if (current != null && current.queue === state.queue && current.index == state.index) {
+                    current.copy(suggestion = outcome)
+                } else {
+                    current
+                }
+            }
+        }
+    }
+
+    /**
+     * Applies the reviewed description/note to the current tidy item
+     * through the existing [updatePhotoMetadata] path (the file is RENAMED
+     * when the sanitized description changes) and advances the queue; the
+     * last item closes the session and fills [tidySummary].
+     */
+    suspend fun applyTidy(rawDescription: String, rawNote: String?): Outcome {
+        val state = _tidyState.value ?: return Outcome.InvalidImage
+        val item = state.queue.getOrNull(state.index) ?: return Outcome.InvalidImage
+        val description = rawDescription.trim()
+        if (description.isEmpty()) return Outcome.BlankName
+        _tidyState.update { it?.copy(applying = true) }
+        val outcome = updatePhotoMetadata(item.relPath, description, rawNote)
+        if (outcome == Outcome.Saved) {
+            tidyApplied++
+            advanceTidy()
+        } else {
+            _tidyState.update { it?.copy(applying = false) }
+        }
+        return outcome
+    }
+
+    /** Leaves the current tidy item untouched and moves to the next. */
+    fun skipTidy() {
+        val state = _tidyState.value ?: return
+        if (state.applying) return
+        tidySkipped++
+        advanceTidy()
+    }
+
+    /** Abandons the tidy session; the summary arrives on [tidySummary]. */
+    fun cancelTidy() = finishTidy()
+
+    /** Consumes the summary once the UI has shown it. */
+    fun acknowledgeTidySummary() {
+        _tidySummary.value = null
+    }
+
+    private fun advanceTidy() {
+        val state = _tidyState.value ?: return
+        val next = state.index + 1
+        if (next >= state.queue.size) {
+            finishTidy()
+            return
+        }
+        _tidyState.value = state.copy(index = next, suggestion = null, applying = false)
+        describeCurrentTidyItem()
+    }
+
+    private fun finishTidy() {
+        if (_tidyState.value == null) return
+        _tidyState.value = null
+        _tidySummary.value = TidySummary(tidyApplied, tidySkipped)
+    }
+
+    // endregion
+
     /** The first free "<base>.jpg" name inside [folderRel] (case-insensitive). */
     private suspend fun uniquePhotoName(
         folderRel: String,
@@ -679,6 +836,9 @@ class DesktopAppController(
     private companion object {
         /** Key-free reason for a "Test connection" with no model configured. */
         const val MODEL_NOT_CONFIGURED = "model not configured"
+
+        /** Key-free inline reason when a tidy photo cannot be read from disk. */
+        const val TIDY_UNREADABLE_REASON = "photo could not be read"
 
         /** Trash entries older than this many days are purged at startup. */
         const val PURGE_DAYS = 30

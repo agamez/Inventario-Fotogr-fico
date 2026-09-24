@@ -31,6 +31,39 @@ object Filenames {
     private val WHITESPACE_RUN = Regex("\\s+")
 
     /**
+     * Base names a camera or the OS generates: a known prefix followed by
+     * separator/digit groups (`IMG_1234`, `DSC_0123`, `PXL_20260903_1234`,
+     * `Screenshot_20260903`, `MVIMG_20260101`) or a bare 8-digit date. The
+     * trailing `([_\\-]?\\d+)*` allows the multi-segment camera shapes
+     * (`PXL_..._...`) while still rejecting real words. Case-insensitive.
+     */
+    private val CAMERA_GENERATED_NAME = Regex(
+        "^(IMG|DSC|DSCN|PXL|Screenshot|MVIMG|2026\\d{4}|20\\d{6})([_\\-]?\\d+)*$",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** Bare digit runs of four or more (`12345`, `20260903`). */
+    private val BARE_DIGITS = Regex("^\\d{4,}$")
+
+    /** Any name the OS screenshotted, whatever follows the prefix. */
+    private const val SCREENSHOT_PREFIX = "Screenshot"
+
+    /**
+     * True when [fileName] (with or without an extension) looks like a
+     * camera/OS-generated photo name rather than a human description: a
+     * known camera prefix plus optional separator/digit groups, a bare
+     * four-plus-digit run, or anything starting with the "Screenshot"
+     * prefix. Used by the AI tidy-up flow to find photos whose description
+     * is still an auto-generated file name.
+     */
+    fun isCameraGenerated(fileName: String): Boolean {
+        val stem = fileName.substringBeforeLast('.', fileName)
+        return CAMERA_GENERATED_NAME.matches(stem) ||
+            BARE_DIGITS.matches(stem) ||
+            stem.startsWith(SCREENSHOT_PREFIX, ignoreCase = true)
+    }
+
+    /**
      * Turns free user text into a legal file/folder name: illegal
      * characters become "_", control characters are dropped, whitespace
      * runs collapse, leading/trailing dots and spaces are trimmed (they

@@ -238,6 +238,7 @@ fun ContainerScreen(
     val pendingCover by viewModel.pendingCover.collectAsStateWithLifecycle()
     val aiSuggestions by viewModel.aiSuggestions.collectAsStateWithLifecycle()
     val aiEnabled by viewModel.aiEnabled.collectAsStateWithLifecycle()
+    val tidyState by viewModel.tidyState.collectAsStateWithLifecycle()
     val photoMoveTargets by viewModel.photoMoveTargets.collectAsStateWithLifecycle()
     val movableTargets by viewModel.movableTargets.collectAsStateWithLifecycle()
     val pendingShare by ShareReceiver.pending.collectAsStateWithLifecycle()
@@ -598,6 +599,7 @@ fun ContainerScreen(
                                 RootOptionsAction(
                                     onRescan = viewModel::rescanNow,
                                     onExportReport = viewModel::exportReport,
+                                    onTidyUp = viewModel::startTidyUp,
                                     onStorageMode = { showStorageDialog = true },
                                     onSettings = onOpenSettings,
                                     onTrash = onOpenTrash,
@@ -1083,6 +1085,21 @@ fun ContainerScreen(
         )
     }
 
+    tidyState?.let { state ->
+        val item = state.queue.getOrNull(state.index)
+        key(item?.relPath ?: "tidy-scanning") {
+            TidyUpDialog(
+                state = state,
+                item = item,
+                model = item?.let { rememberBackendModel(it.relPath, viewModel::photoModel) },
+                onApply = viewModel::applyTidySuggestion,
+                onSkip = viewModel::skipTidyItem,
+                onRetry = viewModel::describeCurrentTidyItem,
+                onCancel = viewModel::cancelTidy,
+            )
+        }
+    }
+
     pendingQueue.firstOrNull()?.let { head ->
         key(head.id) {
             PendingPhotoSaveSheet(
@@ -1299,6 +1316,7 @@ private fun SearchScopeRow(
 private fun RootOptionsAction(
     onRescan: () -> Unit,
     onExportReport: () -> Unit,
+    onTidyUp: () -> Unit,
     onStorageMode: () -> Unit,
     onSettings: () -> Unit,
     onTrash: () -> Unit,
@@ -1324,6 +1342,13 @@ private fun RootOptionsAction(
                 onClick = {
                     expanded = false
                     onExportReport()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.tidy_title)) },
+                onClick = {
+                    expanded = false
+                    onTidyUp()
                 },
             )
             DropdownMenuItem(
@@ -2531,6 +2556,190 @@ private fun AiSuggestionStatus(suggestion: VisionOutcome?) {
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+/**
+ * The full-screen "AI tidy-up" review dialog: image preview, cursor
+ * progress ("3 / 7"), a blank-guarded pre-fill from the AI suggestion
+ * (description required, note optional), an inline failure reason with
+ * Skip/Retry, and Apply/Skip/Cancel. A null [item] means the initial
+ * full-tree scan is still running and only the spinner is shown.
+ */
+@Composable
+private fun TidyUpDialog(
+    state: ContainerViewModel.TidyState,
+    item: ContainerViewModel.TidyItem?,
+    model: Any?,
+    onApply: (String, String?) -> Unit,
+    onSkip: () -> Unit,
+    onRetry: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    Dialog(
+        onDismissRequest = onCancel,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.surface,
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onCancel) {
+                        Icon(
+                            imageVector = Icons.Filled.Close,
+                            contentDescription = stringResource(R.string.tidy_cancel),
+                        )
+                    }
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (state.queue.isNotEmpty()) {
+                        Text(
+                            text = stringResource(
+                                R.string.tidy_progress,
+                                state.index + 1,
+                                state.queue.size,
+                            ),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                    }
+                }
+                if (item == null) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = stringResource(R.string.tidy_scanning),
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                        }
+                    }
+                    return@Column
+                }
+                var description by remember(item.relPath) { mutableStateOf("") }
+                var note by remember(item.relPath) { mutableStateOf("") }
+                // Blank-guarded pre-fill: a late AI reply never overwrites
+                // text the user already typed into either field.
+                LaunchedEffect(item.relPath, state.suggestion) {
+                    val ready = state.suggestion as? VisionOutcome.Suggested ?: return@LaunchedEffect
+                    if (description.isBlank()) description = ready.description
+                    val suggestedNote = ready.note
+                    if (note.isBlank() && !suggestedNote.isNullOrBlank()) note = suggestedNote
+                }
+                AsyncImage(
+                    model = model,
+                    contentDescription = item.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(8.dp),
+                )
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                ) {
+                    OutlinedTextField(
+                        value = description,
+                        onValueChange = { description = it },
+                        label = { Text(stringResource(R.string.photo_description_required_label)) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { note = it },
+                        label = { Text(stringResource(R.string.photo_note_label)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    TidySuggestionStatus(suggestion = state.suggestion, onRetry = onRetry)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 12.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(onClick = onCancel) {
+                            Text(stringResource(R.string.tidy_cancel))
+                        }
+                        Spacer(modifier = Modifier.size(8.dp))
+                        OutlinedButton(
+                            onClick = onSkip,
+                            enabled = !state.applying,
+                        ) {
+                            Text(stringResource(R.string.tidy_skip))
+                        }
+                        Spacer(modifier = Modifier.size(8.dp))
+                        Button(
+                            onClick = { onApply(description, note.ifBlank { null }) },
+                            enabled = description.isNotBlank() && !state.applying,
+                        ) {
+                            Text(stringResource(R.string.tidy_apply))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * The tidy dialog's AI line: a spinner while the suggestion is in flight,
+ * "ready" on success and the key-free failure reason plus a Retry button
+ * otherwise.
+ */
+@Composable
+private fun TidySuggestionStatus(suggestion: VisionOutcome?, onRetry: () -> Unit) {
+    when (suggestion) {
+        null -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+            Spacer(modifier = Modifier.size(8.dp))
+            Text(
+                text = stringResource(R.string.ai_suggestion_thinking),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        is VisionOutcome.Suggested -> Text(
+            text = stringResource(R.string.ai_suggestion_ready),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+
+        is VisionOutcome.Failed -> Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(top = 8.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = stringResource(R.string.ai_suggestion_failed),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    text = suggestion.reason,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = onRetry) {
+                Text(stringResource(R.string.tidy_retry))
+            }
+        }
+    }
 }
 
 /**

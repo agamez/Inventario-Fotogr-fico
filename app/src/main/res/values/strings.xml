@@ -135,6 +135,18 @@
     <string name="ai_suggestion_ready">AI suggestion ready</string>
     <string name="ai_suggestion_failed">AI suggestion failed</string>
 
+    <!-- AI tidy-up: find camera-named photos and offer suggested descriptions -->
+    <string name="tidy_title">AI tidy-up</string>
+    <string name="tidy_progress">%1$d / %2$d</string>
+    <string name="tidy_apply">Apply</string>
+    <string name="tidy_skip">Skip</string>
+    <string name="tidy_cancel">Cancel</string>
+    <string name="tidy_retry">Retry</string>
+    <string name="tidy_done">Tidied %1$d, skipped %2$d</string>
+    <string name="tidy_nothing">Nothing to tidy — no camera-generated names found</string>
+    <string name="tidy_need_ai">Enable AI in Settings first</string>
+    <string name="tidy_scanning">Scanning…</string>
+
     <!-- Trash (soft delete + undo) -->
     <string name="trash_title">Trash</string>
     <string name="trash_enable">Move deleted items to trash</string>

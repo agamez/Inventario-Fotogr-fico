@@ -2,6 +2,7 @@ package com.inventory.storage
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
@@ -101,5 +102,44 @@ class FilenamesTest {
     @Test
     fun folderNamesCollideWithoutAnExtension() {
         assertEquals("Notes (2)", Filenames.uniqueNameIn(setOf("Notes"), "Notes", ""))
+    }
+
+    @Test
+    fun cameraGeneratedNamesAreDetected() {
+        val positives = listOf(
+            "IMG_1234.jpg",
+            "IMG_1234",
+            "img_1234.JPG",
+            "DSC_0123.jpg",
+            "DSCN0001.jpg",
+            "PXL_20260903_1234.jpg",
+            "Screenshot_20260903.png",
+            "Screenshot",
+            "Screenshot (2).jpg",
+            "MVIMG_20260101.jpg",
+            "20260903.jpg",
+            "2026.jpg",
+            "12345.jpg",
+        )
+        positives.forEach { name ->
+            assertTrue(Filenames.isCameraGenerated(name), "expected camera-generated: $name")
+        }
+    }
+
+    @Test
+    fun humanDescriptionsAreNotCameraGenerated() {
+        val negatives = listOf(
+            "Toolbox lid.jpg",
+            "Winter jacket.jpg",
+            "a.jpg",
+            "IMG_holiday.jpg",
+            "DSC_kitchen.jpg",
+            "12.jpg",
+            "202.jpg",
+            "",
+        )
+        negatives.forEach { name ->
+            assertFalse(Filenames.isCameraGenerated(name), "expected human name: $name")
+        }
     }
 }

@@ -17,6 +17,7 @@ import com.inventory.cache.ChildCounts
 import com.inventory.cache.InventoryScanner
 import com.inventory.settings.TrashPrefs
 import com.inventory.share.SharedImage
+import com.inventory.storage.Filenames
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.InventoryStore
 import com.inventory.storage.StorageMode
@@ -295,6 +296,34 @@ class ContainerViewModel @Inject constructor(
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = visionPrefs.isActive(),
         )
+
+    /**
+     * One photo whose name still looks camera-generated, awaiting an AI
+     * tidy-up suggestion and the user's review.
+     */
+    data class TidyItem(val relPath: String, val name: String)
+
+    /**
+     * A running "AI tidy-up" session: the [queue] of vague photos, the
+     * cursor [index], the current AI [suggestion] (null while it is being
+     * fetched), whether a metadata write is in flight ([applying]) and
+     * whether the initial full-tree walk is still running ([scanning]).
+     */
+    data class TidyState(
+        val queue: List<TidyItem>,
+        val index: Int,
+        val suggestion: VisionOutcome?,
+        val applying: Boolean,
+        val scanning: Boolean = false,
+    )
+
+    private val _tidyState = MutableStateFlow<TidyState?>(null)
+
+    /** The active tidy session, or null when none is open. */
+    val tidyState: StateFlow<TidyState?> = _tidyState.asStateFlow()
+
+    private var tidyApplied = 0
+    private var tidySkipped = 0
 
     private val _pendingCover = MutableStateFlow<PendingCoverUpload?>(null)
 
@@ -816,6 +845,141 @@ class ContainerViewModel @Inject constructor(
         }
     }
 
+    // region ai tidy-up
+
+    /**
+     * Overflow "AI tidy-up": scans the disposable index for photos whose
+     * name still looks camera-generated and, when AI is configured, opens a
+     * sequential review session over them. The scan is local and instant; a
+     * missing AI config or an empty result is reported without any network
+     * call (the feature is OFF by default).
+     */
+    fun startTidyUp() {
+        if (_tidyState.value != null) return
+        viewModelScope.launch {
+            _tidyState.value = TidyState(emptyList(), 0, null, applying = false, scanning = true)
+            val vague = dao.allEntries()
+                .filter { it.kind == CacheEntry.KIND_PHOTO && Filenames.isCameraGenerated(it.name) }
+                .map { TidyItem(it.relPath, it.name) }
+            if (vague.isEmpty()) {
+                _tidyState.value = null
+                sendEvent(R.string.tidy_nothing)
+                return@launch
+            }
+            if (!visionPrefs.isActive()) {
+                _tidyState.value = null
+                sendEvent(R.string.tidy_need_ai)
+                return@launch
+            }
+            tidyApplied = 0
+            tidySkipped = 0
+            _tidyState.value = TidyState(vague, 0, suggestion = null, applying = false)
+            describeCurrentTidyItem()
+        }
+    }
+
+    /**
+     * Asks the model to label the current tidy item and parks the (possibly
+     * failed) outcome in [tidyState] for the review dialog; a failure is
+     * rendered inline so the user can Skip or Retry. A reply that lands
+     * after the cursor moved on is dropped.
+     */
+    fun describeCurrentTidyItem() {
+        val state = _tidyState.value ?: return
+        val item = state.queue.getOrNull(state.index) ?: return
+        viewModelScope.launch {
+            _tidyState.update { current ->
+                if (current != null && current.queue === state.queue && current.index == state.index) {
+                    current.copy(suggestion = null)
+                } else {
+                    current
+                }
+            }
+            val bytes = store.readPhotoBytes(item.relPath)
+            val outcome = if (bytes == null) {
+                VisionOutcome.Failed(TIDY_UNREADABLE_REASON)
+            } else {
+                VisionClient(visionPrefs.config()).describe(bytes)
+            }
+            _tidyState.update { current ->
+                if (current != null && current.queue === state.queue && current.index == state.index) {
+                    current.copy(suggestion = outcome)
+                } else {
+                    current
+                }
+            }
+        }
+    }
+
+    /**
+     * Applies the reviewed description/note to the current tidy item
+     * through the same metadata path as [updatePhotoDetails] (the file is
+     * RENAMED when the sanitized description changes) and advances the
+     * queue; the last item closes the session with a summary.
+     */
+    fun applyTidySuggestion(rawDescription: String, rawNote: String?) {
+        val state = _tidyState.value ?: return
+        val item = state.queue.getOrNull(state.index) ?: return
+        val description = rawDescription.trim()
+        if (description.isEmpty()) {
+            viewModelScope.launch { sendEvent(R.string.error_blank_description) }
+            return
+        }
+        _tidyState.update { it?.copy(applying = true) }
+        viewModelScope.launch {
+            when (
+                store.updatePhotoMetadata(
+                    item.relPath,
+                    description,
+                    rawNote?.trim()?.ifEmpty { null },
+                )
+            ) {
+                InventoryStore.UpdateOutcome.Success -> {
+                    tidyApplied++
+                    scanner.rescan()
+                    advanceTidy()
+                }
+                InventoryStore.UpdateOutcome.BlankDescription -> {
+                    _tidyState.update { it?.copy(applying = false) }
+                    sendEvent(R.string.error_blank_description)
+                }
+                InventoryStore.UpdateOutcome.InvalidImage -> {
+                    _tidyState.update { it?.copy(applying = false) }
+                    sendEvent(R.string.error_invalid_image)
+                }
+            }
+        }
+    }
+
+    /** Leaves the current tidy item untouched and moves to the next. */
+    fun skipTidyItem() {
+        val state = _tidyState.value ?: return
+        if (state.applying) return
+        tidySkipped++
+        advanceTidy()
+    }
+
+    /** Abandons the tidy session, reporting how many were applied vs skipped. */
+    fun cancelTidy() = finishTidy()
+
+    private fun advanceTidy() {
+        val state = _tidyState.value ?: return
+        val next = state.index + 1
+        if (next >= state.queue.size) {
+            finishTidy()
+            return
+        }
+        _tidyState.value = state.copy(index = next, suggestion = null, applying = false)
+        describeCurrentTidyItem()
+    }
+
+    /** Closes the session and emits the "Tidied %1$d, skipped %2$d" summary. */
+    private fun finishTidy() {
+        if (_tidyState.value == null) return
+        _tidyState.value = null
+        viewModelScope.launch { sendEvent(R.string.tidy_done, listOf(tidyApplied, tidySkipped)) }
+    }
+
     // endregion
 
     private fun CacheEntry.toFolderChoice(): FolderChoice = FolderChoice(
@@ -833,6 +997,9 @@ class ContainerViewModel @Inject constructor(
 
     /** Mutation announcements that mean "the disk changed somewhere; re-index". */
     private companion object {
+        /** Key-free inline reason when a tidy photo cannot be read from disk. */
+        const val TIDY_UNREADABLE_REASON = "photo could not be read"
+
         val RESCAN_MESSAGES = setOf(
             R.string.photo_added,
             R.string.cover_updated,
