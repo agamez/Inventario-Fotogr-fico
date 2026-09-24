@@ -6,6 +6,7 @@ import com.inventory.storage.AndroidExifEditor
 import com.inventory.storage.BackendEntry
 import com.inventory.storage.ExifEditor
 import com.inventory.storage.FileBackend
+import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.PhotoMeta
 import com.inventory.storage.ROOT_FOLDER_NAME
 import com.inventory.storage.SafBackend
@@ -62,6 +63,22 @@ object StorageModule {
         safBackend: SafBackend,
         prefs: StorageModePrefs,
     ): TrashManager = TrashManager(
+        backend = ModeRoutingBackend(fileBackend, safBackend, prefs),
+    )
+
+    /**
+     * The report generator follows the active storage mode exactly like the
+     * trash manager: it is built on a [ModeRoutingBackend] so it reads and
+     * writes through whichever door is currently active (and is a harmless
+     * no-op before a mode is chosen).
+     */
+    @Provides
+    @Singleton
+    fun provideInventoryReportGenerator(
+        fileBackend: FileBackend,
+        safBackend: SafBackend,
+        prefs: StorageModePrefs,
+    ): InventoryReportGenerator = InventoryReportGenerator(
         backend = ModeRoutingBackend(fileBackend, safBackend, prefs),
     )
 }

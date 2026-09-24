@@ -14,6 +14,7 @@ import com.inventory.storage.COVER_FILE_NAME
 import com.inventory.storage.ExifEditor
 import com.inventory.storage.Filenames
 import com.inventory.storage.FileBackend
+import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.StorageBackend
 import com.inventory.storage.TrashManager
 import com.inventory.storage.joinRel
@@ -65,6 +66,9 @@ class DesktopAppController(
 
     /** Soft-delete/undo over the same file backend the controller uses. */
     val trashManager = TrashManager(backend)
+
+    /** Shared report builder over the same file backend (HTML + CSV). */
+    private val reportGenerator = InventoryReportGenerator(backend)
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var watcher: FolderWatcher? = null
@@ -534,6 +538,18 @@ class DesktopAppController(
         trashManager.listEntries().forEach { trashManager.deleteForever(it.id) }
         _trashEntries.value = trashManager.listEntries()
     }
+
+    // endregion
+
+    // region report
+
+    /**
+     * Writes `inventory-report.html` and `inventory-report.csv` into the
+     * inventory root through the shared [InventoryReportGenerator] and
+     * returns their relative paths (the UI confirms with the HTML path).
+     * The report files are not JPEGs, so the index ignores them.
+     */
+    suspend fun exportReport(): InventoryReportGenerator.ReportFiles = reportGenerator.generate()
 
     // endregion
 

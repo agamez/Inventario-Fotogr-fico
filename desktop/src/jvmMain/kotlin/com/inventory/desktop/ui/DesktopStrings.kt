@@ -19,6 +19,7 @@ object DesktopStrings {
     const val IMPORT_PHOTOS = "Import photos"
     const val ADD_CONTAINER = "Add container"
     const val SETTINGS = "Settings"
+    const val EXPORT_REPORT = "Export report"
 
     // Sections & rows
     const val CONTAINERS_SECTION = "Containers"
@@ -159,6 +160,8 @@ object DesktopStrings {
     const val MSG_PHOTO_ADDED = "Photo added"
     const val MSG_RESCANNED = "Storage rescanned"
     const val MSG_COVER_UPDATED = "Cover updated"
+    const val REPORT_WRITTEN = "Report written to %1\$s"
+    const val REPORT_EXPORT_FAILED = "Report export failed"
     const val MSG_ERROR_BLANK_NAME = "The name cannot be empty"
     const val MSG_ERROR_BLANK_DESCRIPTION = "The description cannot be empty"
     const val MSG_ERROR_INVALID_IMAGE = "That file is not a valid image"

@@ -328,6 +328,16 @@ fun App(controller: DesktopAppController) {
                     if (showTrash) showGlobalSearch = false
                 },
                 onOpenSettings = { showSettings = true },
+                onExportReport = {
+                    scope.launch {
+                        message = try {
+                            val files = controller.exportReport()
+                            DesktopStrings.REPORT_WRITTEN.format(files.htmlRelPath)
+                        } catch (exception: java.io.IOException) {
+                            DesktopStrings.REPORT_EXPORT_FAILED
+                        }
+                    }
+                },
             )
             if (!showTrash) {
                 ActionBar(
@@ -615,7 +625,7 @@ fun App(controller: DesktopAppController) {
     }
 }
 
-/** The app bar: path title + breadcrumb, rescan, global-search toggle and settings. */
+/** The app bar: path title + breadcrumb, rescan, global search, report export, trash and settings. */
 @Composable
 private fun TopBar(
     folderRel: String,
@@ -626,6 +636,7 @@ private fun TopBar(
     onToggleSearch: () -> Unit,
     onToggleTrash: () -> Unit,
     onOpenSettings: () -> Unit,
+    onExportReport: () -> Unit,
 ) {
     Surface(tonalElevation = 2.dp) {
         Row(
@@ -671,6 +682,7 @@ private fun TopBar(
                     contentDescription = DesktopStrings.SEARCH,
                 )
             }
+            TextButton(onClick = onExportReport) { Text(DesktopStrings.EXPORT_REPORT) }
             IconButton(onClick = onToggleTrash) {
                 Icon(
                     imageVector = if (showTrash) Icons.Filled.Close else Icons.Filled.Delete,

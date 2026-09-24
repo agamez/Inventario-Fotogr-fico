@@ -16,6 +16,7 @@ import com.inventory.cache.CacheEntry
 import com.inventory.cache.ChildCounts
 import com.inventory.cache.InventoryScanner
 import com.inventory.settings.TrashPrefs
+import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.InventoryStore
 import com.inventory.storage.StorageMode
 import com.inventory.storage.TrashManager
@@ -73,6 +74,7 @@ class ContainerViewModel @Inject constructor(
     private val visionPrefs: VisionPrefs,
     private val trashPrefs: TrashPrefs,
     private val trashManager: TrashManager,
+    private val reportGenerator: InventoryReportGenerator,
 ) : ViewModel() {
 
     /**
@@ -356,6 +358,24 @@ class ContainerViewModel @Inject constructor(
             store.ensureRoot()
             scanner.rescan()
             sendEvent(R.string.rescanned)
+        }
+    }
+
+    /**
+     * Overflow "Export report" (root only): builds `inventory-report.html`
+     * and `inventory-report.csv` into the inventory root through the shared
+     * [InventoryReportGenerator] and confirms with the report path. The
+     * generator does its I/O on [Dispatchers.IO] itself; a write failure is
+     * reported without crashing the screen.
+     */
+    fun exportReport() {
+        viewModelScope.launch {
+            try {
+                val files = reportGenerator.generate()
+                sendEvent(R.string.report_written, listOf(files.htmlRelPath))
+            } catch (exception: java.io.IOException) {
+                sendEvent(R.string.report_export_failed)
+            }
         }
     }
 

@@ -149,4 +149,9 @@
     <string name="trash_kind_photo">Photo</string>
     <string name="delete_forever_confirm">Permanently delete \"%1$s\"? This cannot be undone.</string>
     <string name="empty_trash_confirm">Permanently delete every trash entry? This cannot be undone.</string>
+
+    <!-- Inventory report export (HTML + CSV into the inventory root) -->
+    <string name="export_report">Export report</string>
+    <string name="report_written">Report written to %1$s</string>
+    <string name="report_export_failed">Report export failed</string>
 </resources>

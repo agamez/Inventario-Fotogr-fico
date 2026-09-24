@@ -262,6 +262,36 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
     }
     controller.setAiEnabled(false)
     report.check("AI disabled cleans the gate", controller.aiConfig() == null)
+
+    // 15. Report export: the shared generator writes both documents into the
+    //     inventory root; the UI confirms with the HTML path. Content markers
+    //     prove the tree was walked, paths URL-encoded and EXIF read.
+    val exported = controller.exportReport()
+    val reportHtml = File(folder, exported.htmlRelPath)
+    val reportCsv = File(folder, exported.csvRelPath)
+    report.check("report HTML written", reportHtml.isFile, exported.htmlRelPath)
+    report.check("report CSV written", reportCsv.isFile, exported.csvRelPath)
+    val htmlText = reportHtml.takeIf { it.isFile }?.readText().orEmpty()
+    val csvText = reportCsv.takeIf { it.isFile }?.readText().orEmpty()
+    report.check("report HTML has title", htmlText.contains("<h1>Photo Inventory</h1>"))
+    report.check("report HTML has the AI container section", htmlText.contains("<h2>AI</h2>"), htmlText)
+    report.check("report HTML has the mock description", htmlText.contains("Mock item"))
+    report.check(
+        "report HTML URL-encodes photo paths",
+        htmlText.contains("src=\"B%20renamed/Alpha%20item.jpg\""),
+        htmlText,
+    )
+    report.check(
+        "report CSV header",
+        csvText.startsWith("containerPath,fileName,description,note,dateTaken"),
+        csvText.take(80),
+    )
+    report.check(
+        "report CSV carries the Alpha row",
+        csvText.contains("B renamed,Alpha item.jpg,Alpha item,has hinge,"),
+        csvText,
+    )
+
     controller.stop()
     mockServer.stop(0)
     configFile.delete()

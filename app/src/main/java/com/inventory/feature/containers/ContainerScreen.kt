@@ -555,6 +555,7 @@ fun ContainerScreen(
                                 }
                                 RootOptionsAction(
                                     onRescan = viewModel::rescanNow,
+                                    onExportReport = viewModel::exportReport,
                                     onStorageMode = { showStorageDialog = true },
                                     onSettings = onOpenSettings,
                                     onTrash = onOpenTrash,
@@ -1203,10 +1204,11 @@ private fun SearchScopeRow(
     }
 }
 
-/** App-bar overflow button for the root: rescan, storage mode, trash and AI settings. */
+/** App-bar overflow button for the root: rescan, report export, storage mode, trash and AI settings. */
 @Composable
 private fun RootOptionsAction(
     onRescan: () -> Unit,
+    onExportReport: () -> Unit,
     onStorageMode: () -> Unit,
     onSettings: () -> Unit,
     onTrash: () -> Unit,
@@ -1225,6 +1227,13 @@ private fun RootOptionsAction(
                 onClick = {
                     expanded = false
                     onRescan()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.export_report)) },
+                onClick = {
+                    expanded = false
+                    onExportReport()
                 },
             )
             DropdownMenuItem(
