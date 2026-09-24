@@ -256,7 +256,10 @@ fun ContainerScreen(
     var showPhotoMoveSheet by remember { mutableStateOf(false) }
     var confirmDeleteSelection by remember { mutableStateOf(false) }
     var photoToDelete by remember { mutableStateOf<CacheEntry?>(null) }
-    var fullScreenPhotoRel by remember { mutableStateOf<String?>(null) }
+    // The full-screen viewer's current page; null while it is closed. The
+    // viewer's Edit action opens [photoToEdit] (the existing editor) on top.
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var photoToEdit by remember { mutableStateOf<CacheEntry?>(null) }
     var showCoverSheet by remember { mutableStateOf(false) }
     var coverTargetRel by remember { mutableStateOf<String?>(null) }
     var upChipBounds by remember { mutableStateOf<Rect?>(null) }
@@ -784,7 +787,9 @@ fun ContainerScreen(
                                                 if (uiState.selectionMode) {
                                                     viewModel.toggleSelection(photo.relPath)
                                                 } else {
-                                                    fullScreenPhotoRel = photo.relPath
+                                                    viewerIndex = uiState.photos.indexOfFirst {
+                                                        it.relPath == photo.relPath
+                                                    }
                                                 }
                                             },
                                             onLongClick = {
@@ -950,6 +955,41 @@ fun ContainerScreen(
         )
     }
 
+    // The viewer is hosted while its photo list has entries: a delete that
+    // empties the container closes it, and otherwise the pager clamps to
+    // the following photo. It is composed before the editor and the delete
+    // confirmation so those dialogs stack above it.
+    val viewerStart = viewerIndex
+    if (viewerStart != null && uiState.photos.isNotEmpty()) {
+        PhotoViewerDialog(
+            photos = uiState.photos,
+            initialIndex = viewerStart,
+            photoLoader = viewModel::photoModel,
+            onDismiss = { viewerIndex = null },
+            onEdit = { photo -> photoToEdit = photo },
+            onDelete = { photo -> photoToDelete = photo },
+            onUpdateIndex = { index -> viewerIndex = index },
+        )
+    }
+
+    // Edit opened from the viewer: the existing metadata editor on top. A
+    // successful save goes through the VM, whose rescan refreshes the
+    // viewer's list and overlay behind it.
+    photoToEdit?.let { photo ->
+        key(photo.relPath) {
+            FullScreenPhotoDialog(
+                photo = photo,
+                model = rememberBackendModel(photo.relPath, viewModel::photoModel),
+                onClose = { photoToEdit = null },
+                onSave = { description, note ->
+                    viewModel.updatePhotoDetails(photo, description, note)
+                    photoToEdit = null
+                },
+                onDelete = { photoToDelete = photo },
+            )
+        }
+    }
+
     photoToDelete?.let { photo ->
         AlertDialog(
             onDismissRequest = { photoToDelete = null },
@@ -970,7 +1010,7 @@ fun ContainerScreen(
                 TextButton(
                     onClick = {
                         viewModel.deletePhoto(photo.relPath)
-                        if (fullScreenPhotoRel == photo.relPath) fullScreenPhotoRel = null
+                        if (photoToEdit?.relPath == photo.relPath) photoToEdit = null
                         photoToDelete = null
                     },
                 ) {
@@ -983,25 +1023,6 @@ fun ContainerScreen(
                 }
             },
         )
-    }
-
-    val fullScreenPhoto = uiState.photos.firstOrNull { it.relPath == fullScreenPhotoRel }
-    LaunchedEffect(fullScreenPhotoRel, fullScreenPhoto) {
-        if (fullScreenPhotoRel != null && fullScreenPhoto == null) fullScreenPhotoRel = null
-    }
-    fullScreenPhoto?.let { photo ->
-        key(photo.relPath) {
-            FullScreenPhotoDialog(
-                photo = photo,
-                model = rememberBackendModel(photo.relPath, viewModel::photoModel),
-                onClose = { fullScreenPhotoRel = null },
-                onSave = { description, note ->
-                    viewModel.updatePhotoDetails(photo, description, note)
-                    fullScreenPhotoRel = null
-                },
-                onDelete = { photoToDelete = photo },
-            )
-        }
     }
 
     pendingQueue.firstOrNull()?.let { head ->

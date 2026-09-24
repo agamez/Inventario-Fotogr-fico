@@ -62,6 +62,9 @@
     <string name="delete_photo_message">\"%1$s\" will be moved to the trash.</string>
     <string name="delete_photo_message_permanent">The photo \"%1$s\" will be permanently deleted. This cannot be undone.</string>
     <string name="close_preview">Close preview</string>
+    <string name="viewer_edit">Edit</string>
+    <string name="viewer_close">Close</string>
+    <string name="viewer_page">%1$d / %2$d</string>
     <string name="photos_pending_count">%1$d more photos waiting</string>
     <string name="photo_added">Photo added</string>
     <string name="photo_deleted">Photo deleted</string>

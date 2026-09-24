@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -142,7 +143,12 @@ fun App(controller: DesktopAppController) {
     var renameTarget by remember { mutableStateOf<DesktopIndex.IndexedContainer?>(null) }
     var moveSourceRel by remember { mutableStateOf<String?>(null) }
     var deleteTarget by remember { mutableStateOf<DesktopIndex.IndexedContainer?>(null) }
-    var detailPhotoRel by remember { mutableStateOf<String?>(null) }
+    // Full-screen viewer page (null while closed); Edit opens [editPhotoRel],
+    // and a viewer delete waits in [viewerDeleteRel].
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var pendingViewerRel by remember { mutableStateOf<String?>(null) }
+    var editPhotoRel by remember { mutableStateOf<String?>(null) }
+    var viewerDeleteRel by remember { mutableStateOf<String?>(null) }
     var photoMoveRel by remember { mutableStateOf<String?>(null) }
     var coverSourceRel by remember { mutableStateOf<String?>(null) }
 
@@ -163,6 +169,28 @@ fun App(controller: DesktopAppController) {
             selectedFolder = parentRelOf(folderRel)
             message = DesktopStrings.MSG_CONTAINER_DELETED
         }
+    }
+
+    // The viewer pages through exactly the grid's list (same folder + search
+    // filter), so it is recomputed whenever the index or the filter changes.
+    val viewerPhotos = remember(snapshot, folderRel, browseQuery, includeSubtree) {
+        controller.photosIn(folderRel, browseQuery, includeSubtree)
+    }
+
+    // Opening from global search: the target folder/filter may still be
+    // settling, so the tapped relPath is resolved once its list arrives.
+    LaunchedEffect(viewerPhotos, pendingViewerRel) {
+        val rel = pendingViewerRel ?: return@LaunchedEffect
+        val index = viewerPhotos.indexOfFirst { it.relPath == rel }
+        if (index >= 0) {
+            viewerIndex = index
+            pendingViewerRel = null
+        }
+    }
+
+    // A delete that emptied the container closes the viewer.
+    LaunchedEffect(viewerPhotos) {
+        if (viewerIndex != null && viewerPhotos.isEmpty()) viewerIndex = null
     }
 
     // While a drag is in flight, keep the drop target under the ghost pointer
@@ -400,8 +428,10 @@ fun App(controller: DesktopAppController) {
                     onOpenPhoto = { photo ->
                         showGlobalSearch = false
                         globalQuery = ""
+                        browseQuery = ""
+                        includeSubtree = false
                         selectedFolder = photo.parentRel.takeIf { it.isNotEmpty() }
-                        detailPhotoRel = photo.relPath
+                        pendingViewerRel = photo.relPath
                     },
                 )
             } else {
@@ -413,7 +443,7 @@ fun App(controller: DesktopAppController) {
                     onQueryChange = { browseQuery = it },
                     onScopeChange = { includeSubtree = it },
                     onOpenContainer = { selectedFolder = it },
-                    onOpenPhoto = { detailPhotoRel = it },
+                    onOpenPhoto = { _, index -> viewerIndex = index },
                     onRename = { renameTarget = it },
                     onMove = { moveSourceRel = it },
                     onSetCover = { coverSourceRel = it },
@@ -430,6 +460,22 @@ fun App(controller: DesktopAppController) {
                     onGridBounds = { gridBounds = it },
                 )
             }
+        }
+
+        // The full-screen viewer is an overlay in the window-content Box so
+        // the browse surface and its keyboard focus chain stay alive
+        // underneath. It pages through the grid's exact list.
+        val viewerStart = viewerIndex
+        if (viewerStart != null && viewerPhotos.isNotEmpty()) {
+            PhotoViewerOverlay(
+                controller = controller,
+                photos = viewerPhotos,
+                initialIndex = viewerStart,
+                onDismiss = { viewerIndex = null },
+                onEdit = { photo -> editPhotoRel = photo.relPath },
+                onDelete = { photo -> viewerDeleteRel = photo.relPath },
+                onUpdateIndex = { index -> viewerIndex = index },
+            )
         }
 
         // region dialogs
@@ -523,17 +569,17 @@ fun App(controller: DesktopAppController) {
             )
         }
 
-        detailPhotoRel?.let { rel ->
+        editPhotoRel?.let { rel ->
             val photo = snapshot.allPhotos.firstOrNull { it.relPath == rel }
             if (photo == null) {
-                LaunchedEffect(rel) { detailPhotoRel = null }
+                LaunchedEffect(rel) { editPhotoRel = null }
             } else {
                 PhotoDetailsDialog(
                     controller = controller,
                     photo = photo,
-                    onDismiss = { detailPhotoRel = null },
+                    onDismiss = { editPhotoRel = null },
                     onDeleted = {
-                        detailPhotoRel = null
+                        editPhotoRel = null
                         message = DesktopStrings.MSG_PHOTO_DELETED
                     },
                     onOutcome = { outcome ->
@@ -548,6 +594,37 @@ fun App(controller: DesktopAppController) {
             }
         }
 
+        // Delete requested from the viewer: the existing confirm, then the
+        // viewer advances to the following photo (or closes when none left).
+        viewerDeleteRel?.let { rel ->
+            val photo = snapshot.allPhotos.firstOrNull { it.relPath == rel }
+            if (photo == null) {
+                LaunchedEffect(rel) { viewerDeleteRel = null }
+            } else {
+                ConfirmDialog(
+                    title = DesktopStrings.DELETE_PHOTO_TITLE,
+                    message = (if (trashEnabled) {
+                        DesktopStrings.DELETE_PHOTO_MESSAGE
+                    } else {
+                        DesktopStrings.DELETE_PHOTO_MESSAGE_PERMANENT
+                    }).format(photo.description),
+                    confirmLabel = DesktopStrings.DELETE,
+                    onDismiss = { viewerDeleteRel = null },
+                    onConfirm = {
+                        val deletedIndex = viewerIndex ?: 0
+                        val previousCount = viewerPhotos.size
+                        viewerDeleteRel = null
+                        scope.launch {
+                            controller.deletePhoto(rel)
+                            message = DesktopStrings.MSG_PHOTO_DELETED
+                            viewerIndex =
+                                nextViewerIndex(deletedIndex, previousCount).takeIf { it >= 0 }
+                        }
+                    },
+                )
+            }
+        }
+
         photoMoveRel?.let { rel ->
             val currentParent = parentRelOf(rel)
             FolderPickerDialog(
@@ -558,7 +635,7 @@ fun App(controller: DesktopAppController) {
                     photoMoveRel = null
                     scope.launch {
                         controller.movePhotosTo(listOf(rel), choice.relPath)
-                        detailPhotoRel = null
+                        editPhotoRel = null
                         message = DesktopStrings.MSG_PHOTOS_MOVED
                     }
                 },
@@ -771,7 +848,7 @@ private fun BrowseView(
     onQueryChange: (String) -> Unit,
     onScopeChange: (Boolean) -> Unit,
     onOpenContainer: (String) -> Unit,
-    onOpenPhoto: (String) -> Unit,
+    onOpenPhoto: (DesktopIndex.IndexedPhoto, Int) -> Unit,
     onRename: (DesktopIndex.IndexedContainer) -> Unit,
     onMove: (String) -> Unit,
     onSetCover: (String) -> Unit,
@@ -863,12 +940,12 @@ private fun BrowseView(
             item(key = "photos-header", span = { GridItemSpan(maxLineSpan) }) {
                 SectionHeader(DesktopStrings.PHOTOS_SECTION)
             }
-            items(photos, key = { it.relPath }) { photo ->
+            itemsIndexed(photos, key = { _, photo -> photo.relPath }) { index, photo ->
                 PhotoTile(
                     photo = photo,
                     controller = controller,
                     dragController = dragController,
-                    onClick = { onOpenPhoto(photo.relPath) },
+                    onClick = { onOpenPhoto(photo, index) },
                 )
             }
         } else if (query.isNotBlank()) {

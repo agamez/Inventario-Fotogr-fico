@@ -67,6 +67,13 @@ object DesktopStrings {
     const val NO_DATE = "no date"
     const val PHOTO_PATH_LINE = "In: %s"
 
+    // Full-screen photo viewer
+    const val VIEWER_EDIT = "Edit"
+    const val VIEWER_CLOSE = "Close"
+    const val VIEWER_PAGE = "%1\$d / %2\$d"
+    const val VIEWER_PREVIOUS = "Previous photo"
+    const val VIEWER_NEXT = "Next photo"
+
     // Folder picker dialog
     const val NO_FOLDER_TARGETS = "No other folders yet."
 
