@@ -219,6 +219,7 @@ fun ContainerScreen(
     onOpenCoverCapture: (String) -> Unit,
     onOpenSearch: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenTrash: () -> Unit,
     onBack: () -> Unit,
     dragController: DragController = remember { DragController() },
     viewModel: ContainerViewModel = hiltViewModel(),
@@ -556,6 +557,7 @@ fun ContainerScreen(
                                     onRescan = viewModel::rescanNow,
                                     onStorageMode = { showStorageDialog = true },
                                     onSettings = onOpenSettings,
+                                    onTrash = onOpenTrash,
                                 )
                             } else {
                                 IconButton(
@@ -1187,12 +1189,13 @@ private fun SearchScopeRow(
     }
 }
 
-/** App-bar overflow button for the root: rescan, storage mode and AI settings. */
+/** App-bar overflow button for the root: rescan, storage mode, trash and AI settings. */
 @Composable
 private fun RootOptionsAction(
     onRescan: () -> Unit,
     onStorageMode: () -> Unit,
     onSettings: () -> Unit,
+    onTrash: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
     Box {
@@ -1215,6 +1218,13 @@ private fun RootOptionsAction(
                 onClick = {
                     expanded = false
                     onStorageMode()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.trash_title)) },
+                onClick = {
+                    expanded = false
+                    onTrash()
                 },
             )
             DropdownMenuItem(

@@ -35,6 +35,7 @@ import com.inventory.feature.photos.CameraCaptureScreen
 import com.inventory.feature.photos.CoverCaptureScreen
 import com.inventory.feature.search.SearchScreen
 import com.inventory.feature.settings.SettingsScreen
+import com.inventory.feature.trash.TrashScreen
 import kotlin.math.roundToInt
 
 /**
@@ -104,6 +105,9 @@ fun InventoryNavGraph(
                     onOpenSettings = {
                         navController.navigate(Screens.Settings.route)
                     },
+                    onOpenTrash = {
+                        navController.navigate(Screens.Trash.route)
+                    },
                     onBack = {},
                     dragController = dragController,
                 )
@@ -111,6 +115,10 @@ fun InventoryNavGraph(
 
             composable(route = Screens.Settings.route) {
                 SettingsScreen(onBack = { navController.popBackStack() })
+            }
+
+            composable(route = Screens.Trash.route) {
+                TrashScreen(onBack = { navController.popBackStack() })
             }
 
             composable(route = Screens.Search.route) {
@@ -145,6 +153,9 @@ fun InventoryNavGraph(
                     },
                     onOpenSettings = {
                         navController.navigate(Screens.Settings.route)
+                    },
+                    onOpenTrash = {
+                        navController.navigate(Screens.Trash.route)
                     },
                     onBack = { navController.popBackStack() },
                     dragController = dragController,

@@ -27,7 +27,7 @@
     <string name="move_container_to">Move to…</string>
     <string name="no_other_containers">There is nowhere else to move this to. Create another container first.</string>
     <string name="delete_container_title">Delete container?</string>
-    <string name="delete_container_message">\"%1$s\" and everything inside it (%2$d containers, %3$d photos) will be permanently deleted. This cannot be undone.</string>
+    <string name="delete_container_message">\"%1$s\" and everything inside it (%2$d containers, %3$d photos) will be moved to the trash and auto-purged after 30 days.</string>
     <string name="error_blank_name">Name cannot be blank</string>
     <string name="error_duplicate_name">An item with this name already exists</string>
     <string name="error_invalid_move_target">You can\'t move a container into itself or its own contents.</string>
@@ -55,9 +55,9 @@
     <string name="selection_exit">Exit selection</string>
     <string name="selection_move">Move selected photos</string>
     <string name="selection_delete">Delete selected photos</string>
-    <string name="delete_photos_confirm">%1$d photo(s) will be permanently deleted. This cannot be undone.</string>
+    <string name="delete_photos_confirm">%1$d photo(s) will be moved to the trash.</string>
     <string name="delete_photo_title">Delete photo?</string>
-    <string name="delete_photo_message">The photo \"%1$s\" will be permanently deleted. This cannot be undone.</string>
+    <string name="delete_photo_message">\"%1$s\" will be moved to the trash.</string>
     <string name="close_preview">Close preview</string>
     <string name="photos_pending_count">%1$d more photos waiting</string>
     <string name="photo_added">Photo added</string>
@@ -128,4 +128,20 @@
     <string name="ai_suggestion_thinking">Asking AI…</string>
     <string name="ai_suggestion_ready">AI suggestion ready</string>
     <string name="ai_suggestion_failed">AI suggestion failed</string>
+
+    <!-- Trash (soft delete + undo) -->
+    <string name="trash_title">Trash</string>
+    <string name="trash_empty">Trash is empty</string>
+    <string name="restore">Restore</string>
+    <string name="delete_forever">Delete forever</string>
+    <string name="empty_trash">Empty trash</string>
+    <string name="trash_restored">Restored</string>
+    <string name="trash_purged_entry">Deleted forever</string>
+    <string name="trash_empty_done">Trash emptied</string>
+    <string name="trash_was_in">Was in %1$s</string>
+    <string name="trash_deleted_on">Deleted %1$s</string>
+    <string name="trash_kind_container">Container</string>
+    <string name="trash_kind_photo">Photo</string>
+    <string name="delete_forever_confirm">Permanently delete \"%1$s\"? This cannot be undone.</string>
+    <string name="empty_trash_confirm">Permanently delete every trash entry? This cannot be undone.</string>
 </resources>

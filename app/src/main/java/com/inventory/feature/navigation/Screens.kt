@@ -35,6 +35,9 @@ sealed class Screens(val route: String) {
     /** AI auto-labeling configuration (endpoint, key, model, test). */
     data object Settings : Screens(route = "settings")
 
+    /** Trash: restorable soft-deleted containers and photos. */
+    data object Trash : Screens(route = "trash")
+
     companion object {
         const val ARG_PATH = "path"
 

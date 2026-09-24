@@ -1835,11 +1835,13 @@ def t_conflicts():
     check("delete action opens confirm", tap_desc("Delete selected photos"))
     time.sleep(1.0)
     check("confirm counts 1 photo",
-          bool(find_all(dump(), text="1 photo(s) will be permanently deleted")))
+          bool(find_all(dump(), text="1 photo(s) will be moved to the trash")))
     tap_text("Delete")
     check("photo deleted snackbar", snackbar_visible("Photo deleted", timeout=10))
     time.sleep(1.5)
-    check("disk: conflict copy deleted via UI", not fs_exists(dst))
+    # Deletions are soft: the original path is gone but the file now lives
+    # under the dot-prefixed .trash tree (checked by the final disk audit).
+    check("disk: conflict copy removed from the visible tree", not fs_exists(dst))
     check("original photo survived", fs_exists(src))
     check("banner gone after the delete-rescan", wait_absent("sync-conflicted", timeout=10))
 
@@ -2319,9 +2321,24 @@ def t_disk_final():
         fp("Estate", "Storage unit", "Shelf B"),
         fp("Estate", "Storage unit", "Shelf B", "Old skis.jpg"),
     ])
-    got = tree()
+    raw = tree()
+    # Deletions are soft: trashed entries live under the dot-prefixed .trash
+    # tree (invisible to listings/scanner, still on disk). Exclude it from
+    # the visible-tree audit and assert the trash separately, so neither
+    # check is weakened.
+    trash_root = fp(".trash")
+    trashed = [p for p in raw if p.startswith(trash_root + "/")]
+    got = [p for p in raw if p != trash_root and not p.startswith(trash_root + "/")]
     check("final tree matches disk exactly", got == exp, f"got={got}")
-    check("no .sync-conflict remnants", not any(".sync-conflict" in p for p in got))
+    check("trash holds the soft-deleted Building (2) container",
+          any(p.endswith("/Building (2)") for p in trashed), f"trashed={trashed}")
+    check("trash holds the soft-deleted conflict copy",
+          any(p.endswith("/Toolbox lid.sync-conflict-20260902-000000-ABCD.jpg")
+              for p in trashed), f"trashed={trashed}")
+    check("trash entries carry .origin sidecars",
+          sum(p.endswith("/.origin") for p in trashed) >= 2, f"trashed={trashed}")
+    check("no .sync-conflict remnants in the visible tree",
+          not any(".sync-conflict" in p for p in got))
     check("no temp (.pending/.exif/.cover) leaks", not any("/." in p for p in got))
     check("_cover.jpg exactly where set (Shelf A)",
           [p for p in got if p.endswith("_cover.jpg")]
