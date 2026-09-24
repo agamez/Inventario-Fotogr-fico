@@ -196,6 +196,7 @@ object DesktopStrings {
     const val MSG_RESCANNED = "Storage rescanned"
     const val MSG_COVER_UPDATED = "Cover updated"
     const val REPORT_WRITTEN = "Report written to %1\$s"
+    const val REPORT_GENERATING = "Generating report…"
     const val REPORT_EXPORT_FAILED = "Report export failed"
     const val MSG_ERROR_BLANK_NAME = "The name cannot be empty"
     const val MSG_ERROR_BLANK_DESCRIPTION = "The description cannot be empty"

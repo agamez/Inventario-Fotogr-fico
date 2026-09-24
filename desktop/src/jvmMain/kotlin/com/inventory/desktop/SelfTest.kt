@@ -325,11 +325,17 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
     val htmlText = reportHtml.takeIf { it.isFile }?.readText().orEmpty()
     val csvText = reportCsv.takeIf { it.isFile }?.readText().orEmpty()
     report.check("report HTML has title", htmlText.contains("<h1>Photo Inventory</h1>"))
+    report.check("report HTML has the summary totals", htmlText.contains("<li>Photos: "))
     report.check("report HTML has the AI container section", htmlText.contains("<h2>AI</h2>"), htmlText)
     report.check("report HTML has the mock description", htmlText.contains("Mock item"))
     report.check(
-        "report HTML URL-encodes photo paths",
-        htmlText.contains("src=\"B%20renamed/Alpha%20item.jpg\""),
+        "report HTML embeds base64 thumbnails",
+        htmlText.contains("data:image/jpeg;base64,"),
+        htmlText.take(200),
+    )
+    report.check(
+        "report HTML URL-encodes the original photo links",
+        htmlText.contains("href=\"B%20renamed/Alpha%20item.jpg\""),
         htmlText,
     )
     report.check(

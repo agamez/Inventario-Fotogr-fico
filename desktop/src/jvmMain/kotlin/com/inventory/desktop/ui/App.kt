@@ -119,6 +119,7 @@ import kotlinx.coroutines.withContext
 fun App(controller: DesktopAppController) {
     val snapshot by controller.snapshot.collectAsState()
     val scanning by controller.scanning.collectAsState()
+    val reportGenerating by controller.reportGenerating.collectAsState()
     val conflictCount by controller.conflictCount.collectAsState()
     val pendingQueue by controller.pendingQueue.collectAsState()
     val aiSettings by controller.aiSettings.collectAsState()
@@ -570,6 +571,15 @@ fun App(controller: DesktopAppController) {
                 )
             }
             if (scanning) LinearProgressIndicator(Modifier.fillMaxWidth())
+            if (reportGenerating) {
+                LinearProgressIndicator(Modifier.fillMaxWidth())
+                Text(
+                    text = DesktopStrings.REPORT_GENERATING,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                )
+            }
             if (conflictCount > 0) {
                 ConflictBanner(conflictCount)
             }

@@ -241,6 +241,7 @@ fun ContainerScreen(
     val tidyState by viewModel.tidyState.collectAsStateWithLifecycle()
     val photoMoveTargets by viewModel.photoMoveTargets.collectAsStateWithLifecycle()
     val movableTargets by viewModel.movableTargets.collectAsStateWithLifecycle()
+    val reportGenerating by viewModel.reportGenerating.collectAsStateWithLifecycle()
     val pendingShare by ShareReceiver.pending.collectAsStateWithLifecycle()
     val importedNotice by ShareReceiver.importedNotice.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -691,6 +692,15 @@ fun ContainerScreen(
                 }
                 if (uiState.scanning) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                if (reportGenerating) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        text = stringResource(R.string.report_generating),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+                    )
                 }
             }
         },

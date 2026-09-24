@@ -16,6 +16,7 @@ import com.inventory.storage.ExifEditor
 import com.inventory.storage.Filenames
 import com.inventory.storage.FileBackend
 import com.inventory.storage.ImageHasher
+import com.inventory.storage.ImageThumbnailer
 import com.inventory.storage.ImageTranscoder
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.StorageBackend
@@ -66,6 +67,8 @@ class DesktopAppController(
     private val transcoder: ImageTranscoder = ImageIoImageTranscoder(),
     /** Decodes image bytes into the dHash grid used by duplicate detection. */
     private val hasher: ImageHasher = ImageIoImageHasher(),
+    /** Downscales + orientation-corrects each photo into a report thumbnail. */
+    private val thumbnailer: ImageThumbnailer = ImageIoImageThumbnailer(),
 ) {
 
     val backend: StorageBackend = FileBackend(root = rootDir, accessCheck = { true }, exif = exifEditor)
@@ -81,7 +84,11 @@ class DesktopAppController(
     val trashManager = TrashManager(backend)
 
     /** Shared report builder over the same file backend (HTML + CSV). */
-    private val reportGenerator = InventoryReportGenerator(backend)
+    private val reportGenerator = InventoryReportGenerator(
+        backend = backend,
+        thumbnailer = thumbnailer,
+        rootName = rootDir.name,
+    )
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var watcher: FolderWatcher? = null
@@ -100,6 +107,11 @@ class DesktopAppController(
 
     /** The current trash listing, newest deletion first (mirrors Android). */
     val trashEntries: StateFlow<List<TrashManager.TrashEntry>> = _trashEntries.asStateFlow()
+
+    private val _reportGenerating = MutableStateFlow(false)
+
+    /** True while the report generator walks the tree, thumbnails and writes. */
+    val reportGenerating: StateFlow<Boolean> = _reportGenerating.asStateFlow()
 
     init {
         // Opportunistic purge at startup (fire-and-forget), but ONLY while
@@ -793,9 +805,18 @@ class DesktopAppController(
      * Writes `inventory-report.html` and `inventory-report.csv` into the
      * inventory root through the shared [InventoryReportGenerator] and
      * returns their relative paths (the UI confirms with the HTML path).
-     * The report files are not JPEGs, so the index ignores them.
+     * [reportGenerating] drives an indeterminate progress indicator while
+     * the walk + thumbnailing runs; the report files are not JPEGs, so the
+     * index ignores them.
      */
-    suspend fun exportReport(): InventoryReportGenerator.ReportFiles = reportGenerator.generate()
+    suspend fun exportReport(): InventoryReportGenerator.ReportFiles {
+        _reportGenerating.value = true
+        return try {
+            reportGenerator.generate()
+        } finally {
+            _reportGenerating.value = false
+        }
+    }
 
     // endregion
 

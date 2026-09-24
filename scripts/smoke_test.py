@@ -2427,21 +2427,28 @@ def t_report():
     with open(local_html, encoding="utf-8") as fh: html_text = fh.read()
     with open(local_csv, encoding="utf-8") as fh: csv_text = fh.read()
     os.unlink(local_html); os.unlink(local_csv)
-    check("HTML has a per-container section heading", "<h2>Reportable</h2>" in html_text)
+    check("HTML has the summary markers",
+          "Total photo bytes:" in html_text and "<li>Photos:" in html_text)
+    check("HTML has a per-container section",
+          'class="container depth-' in html_text and "<h2>Reportable</h2>" in html_text)
+    check("HTML embeds a base64 thumbnail",
+          "data:image/jpeg;base64," in html_text)
     check("HTML escapes the description markup and comma",
           "Report &lt;b&gt;bold&lt;/b&gt;, comma" in html_text
           and "Report <b>bold</b>, comma" not in html_text)
-    check("HTML URL-encodes the relative img src per segment",
-          'src="Reportable/Report%20bold%2C%20comma.jpg"' in html_text,
-          "no URL-encoded src for the seeded photo")
+    check("HTML URL-encodes the original photo link per segment",
+          'href="Reportable/Report%20bold%2C%20comma.jpg"' in html_text,
+          "no URL-encoded href for the seeded photo")
     import csv as _csv
     rows = list(_csv.reader(csv_text.splitlines()))
     check("CSV header is the contractual column list",
           bool(rows) and rows[0] == ["containerPath", "fileName", "description",
-                                     "note", "dateTaken"], str(rows[:1]))
+                                     "note", "dateTaken", "sizeBytes"], str(rows[:1]))
     want = ["Reportable", "Report bold, comma.jpg",
-            "Report <b>bold</b>, comma", "", "2026-05-04"]
-    check("CSV module parses the expected seeded row", want in rows[1:], str(rows))
+            "Report <b>bold</b>, comma", "", "2026:05:04 08:00:00"]
+    check("CSV module parses the expected seeded row",
+          any(r[:5] == want and r[5].isdigit() and int(r[5]) > 0 for r in rows[1:]),
+          str(rows))
     # cleanup: the report files + the seeded container (the report is invisible
     # to the app, so the final tree must not carry either)
     sh(f"rm -f {sq(html)} {sq(csvp)}")

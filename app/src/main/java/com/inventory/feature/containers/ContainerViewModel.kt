@@ -341,6 +341,11 @@ class ContainerViewModel @Inject constructor(
     /** The picked cover awaiting confirmation in the preview dialog, or null. */
     val pendingCover: StateFlow<PendingCoverUpload?> = _pendingCover.asStateFlow()
 
+    private val _reportGenerating = MutableStateFlow(false)
+
+    /** True while the report generator walks the tree, thumbnails and writes. */
+    val reportGenerating: StateFlow<Boolean> = _reportGenerating.asStateFlow()
+
     /** One-shot UI events, consumed exactly once by the screen. */
     sealed interface ContainerEvent {
         data class ShowMessage(
@@ -406,16 +411,20 @@ class ContainerViewModel @Inject constructor(
      * Overflow "Export report" (root only): builds `inventory-report.html`
      * and `inventory-report.csv` into the inventory root through the shared
      * [InventoryReportGenerator] and confirms with the report path. The
-     * generator does its I/O on [Dispatchers.IO] itself; a write failure is
-     * reported without crashing the screen.
+     * generator does its I/O (and thumbnailing) on [Dispatchers.IO] itself;
+     * [reportGenerating] drives an indeterminate progress indicator while it
+     * runs, and a write failure is reported without crashing the screen.
      */
     fun exportReport() {
         viewModelScope.launch {
+            _reportGenerating.value = true
             try {
                 val files = reportGenerator.generate()
                 sendEvent(R.string.report_written, listOf(files.htmlRelPath))
             } catch (exception: java.io.IOException) {
                 sendEvent(R.string.report_export_failed)
+            } finally {
+                _reportGenerating.value = false
             }
         }
     }

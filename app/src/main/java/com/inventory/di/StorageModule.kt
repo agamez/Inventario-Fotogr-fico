@@ -4,12 +4,14 @@ import android.content.Context
 import android.os.Environment
 import com.inventory.storage.AndroidExifEditor
 import com.inventory.storage.AndroidImageHasher
+import com.inventory.storage.AndroidImageThumbnailer
 import com.inventory.storage.AndroidImageTranscoder
 import com.inventory.storage.BackendEntry
 import com.inventory.storage.DuplicateGuard
 import com.inventory.storage.ExifEditor
 import com.inventory.storage.FileBackend
 import com.inventory.storage.ImageHasher
+import com.inventory.storage.ImageThumbnailer
 import com.inventory.storage.ImageTranscoder
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.PhotoMeta
@@ -57,6 +59,11 @@ object StorageModule {
     @Provides
     @Singleton
     fun provideImageHasher(): ImageHasher = AndroidImageHasher()
+
+    /** The platform preview encoder behind the report's embedded thumbnails. */
+    @Provides
+    @Singleton
+    fun provideImageThumbnailer(): ImageThumbnailer = AndroidImageThumbnailer()
 
     /**
      * Duplicate detection follows the active storage mode like the trash
@@ -114,8 +121,10 @@ object StorageModule {
         fileBackend: FileBackend,
         safBackend: SafBackend,
         prefs: StorageModePrefs,
+        thumbnailer: ImageThumbnailer,
     ): InventoryReportGenerator = InventoryReportGenerator(
         backend = ModeRoutingBackend(fileBackend, safBackend, prefs),
+        thumbnailer = thumbnailer,
     )
 }
 
