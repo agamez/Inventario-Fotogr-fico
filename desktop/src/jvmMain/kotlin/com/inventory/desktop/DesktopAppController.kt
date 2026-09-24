@@ -564,10 +564,93 @@ class DesktopAppController(
         } else {
             backend.deleteFile(rel)
         }
+        _selectedPhotoRels.update { it - rel }
         index.rebuild()
         _trashEntries.value = trashManager.listEntries()
         Outcome.Deleted
     }
+
+    // region multi-select (desktop mouse/keyboard)
+
+    private val _selectedPhotoRels = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Relative paths of the multi-selected photos (empty = no selection). */
+    val selectedPhotoRels: StateFlow<Set<String>> = _selectedPhotoRels.asStateFlow()
+
+    /**
+     * Anchor of a Shift+click range: the last photo whose selection was
+     * toggled. Kept private because the grid order itself lives in the UI.
+     */
+    private var selectionAnchor: String? = null
+
+    /** Ctrl+click: toggles [rel] and makes it the new range anchor. */
+    fun toggleSelect(rel: String) {
+        _selectedPhotoRels.update { current ->
+            if (rel in current) current - rel else current + rel
+        }
+        selectionAnchor = rel
+    }
+
+    /**
+     * Shift+click: adds the inclusive range between the anchor and
+     * [targetRel] to the selection. The caller supplies [orderedPhotoRels]
+     * because the grid order is a UI concern; an anchor that is no longer
+     * on screen degrades to "select just the target".
+     */
+    fun rangeSelectTo(targetRel: String, orderedPhotoRels: List<String>) {
+        val targetIndex = orderedPhotoRels.indexOf(targetRel)
+        if (targetIndex < 0) return
+        val anchorIndex = selectionAnchor?.let { orderedPhotoRels.indexOf(it) } ?: -1
+        if (anchorIndex < 0) {
+            selectionAnchor = targetRel
+            _selectedPhotoRels.update { it + targetRel }
+            return
+        }
+        val from = minOf(anchorIndex, targetIndex)
+        val to = maxOf(anchorIndex, targetIndex)
+        _selectedPhotoRels.update { it + orderedPhotoRels.subList(from, to + 1) }
+    }
+
+    /** Ctrl+A: selects every photo currently listed in the browse grid. */
+    fun selectAllInCurrentFolder(orderedPhotoRels: List<String>) {
+        _selectedPhotoRels.value = orderedPhotoRels.toSet()
+        selectionAnchor = orderedPhotoRels.firstOrNull()
+    }
+
+    /** Esc: drops the whole multi-selection. */
+    fun clearSelection() {
+        _selectedPhotoRels.value = emptySet()
+        selectionAnchor = null
+    }
+
+    /**
+     * Drops the multi-selection when the browse folder changes. The UI calls
+     * this from a folder-keyed effect — the controller deliberately does not
+     * track navigation itself.
+     */
+    fun onFolderChanged() = clearSelection()
+
+    /**
+     * Deletes every selected photo through the existing per-photo delete
+     * (trash semantics follow the setting), rebuilds the index and clears
+     * the selection. The single user confirmation is shown by the UI before
+     * this is called; mirrors Android's `deleteSelected`.
+     */
+    suspend fun deleteSelectedPhotos(): Outcome = withContext(Dispatchers.IO) {
+        val paths = _selectedPhotoRels.value.toList()
+        if (paths.isEmpty()) return@withContext Outcome.Deleted
+        if (config.trashEnabled.value) {
+            trashManager.trashPhotos(paths)
+        } else {
+            paths.forEach { backend.deleteFile(it) }
+        }
+        index.rebuild()
+        _trashEntries.value = trashManager.listEntries()
+        clearSelection()
+        Outcome.Deleted
+    }
+
+    // endregion
 
     /**
      * Moves every photo in [rels] into [targetFolderRel] byte-identically,
@@ -593,6 +676,10 @@ class DesktopAppController(
             }
         }
         index.rebuild()
+        // Moving drops any multi-selection (Android's movePhotosTo does the
+        // same); a drag that carried the selection must not leave hidden
+        // paths selected after the files changed parent.
+        clearSelection()
         if (moved == rels.size) Outcome.Moved else Outcome.InvalidImage
     }
 

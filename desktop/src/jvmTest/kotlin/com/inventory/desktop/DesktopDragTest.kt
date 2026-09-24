@@ -59,6 +59,25 @@ class DesktopDragTest {
     }
 
     @Test
+    fun multiPathPhotoDragMovesEverySelectedPhoto() = runTest {
+        val tree = tree()
+        tree.app.importPhoto(tree.shelfA, syntheticJpeg(), "Second", null)
+        val photos = tree.app.photosIn(tree.shelfA, "", includeSubtree = false)
+        assertEquals(2, photos.size)
+
+        val outcome = tree.app.dropDrag(
+            DragPayload(photos.map { it.relPath }, "2 items", DragKind.PHOTO),
+            tree.shelfB,
+        )
+
+        assertTrue(outcome)
+        assertTrue(File(tree.root, "${tree.shelfB}/Item.jpg").isFile)
+        assertTrue(File(tree.root, "${tree.shelfB}/Second.jpg").isFile)
+        assertTrue(tree.app.photosIn(tree.shelfA, "", includeSubtree = false).isEmpty())
+        assertEquals(2, tree.app.snapshot.value.allPhotos.count { it.parentRel == tree.shelfB })
+    }
+
+    @Test
     fun containerDragRelocatesTheWholeSubtree() = runTest {
         val tree = tree()
         val outcome = tree.app.dropDrag(

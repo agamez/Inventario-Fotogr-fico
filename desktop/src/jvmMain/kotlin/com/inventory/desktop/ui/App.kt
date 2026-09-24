@@ -72,15 +72,19 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -131,6 +135,18 @@ fun App(controller: DesktopAppController) {
     var gridBounds by remember { mutableStateOf<Rect?>(null) }
     var upChipBounds by remember { mutableStateOf<Rect?>(null) }
 
+    // Desktop multi-select and keyboard focus-cursor state. The selection
+    // itself lives in the controller (shared with its mutators), the focus
+    // cursor is pure UI (an index into the container list / photo grid).
+    val selectedPhotoRels by controller.selectedPhotoRels.collectAsState()
+    var focus by remember { mutableStateOf<BrowseFocus?>(null) }
+    var browseSearchFocused by remember { mutableStateOf(false) }
+    // Latest pointer-keyboard modifiers, fed by the root-level Initial-pass
+    // tracker below (clickable's onClick cannot see them). Held as a state
+    // object so a tile's click lambda reads the CURRENT value at click time
+    // instead of a value captured at the last recomposition.
+    val pointerModifiers = remember { mutableStateOf(PointerModifiers()) }
+
     var selectedFolder by remember { mutableStateOf<String?>(null) }
     var showGlobalSearch by remember { mutableStateOf(false) }
     var showTrash by remember { mutableStateOf(false) }
@@ -153,6 +169,10 @@ fun App(controller: DesktopAppController) {
     var viewerDeleteRel by remember { mutableStateOf<String?>(null) }
     var photoMoveRel by remember { mutableStateOf<String?>(null) }
     var coverSourceRel by remember { mutableStateOf<String?>(null) }
+    // Multi-select delete confirmation (the whole selection, one dialog) and
+    // the single-photo confirm reached from the keyboard focus cursor.
+    var confirmDeleteSelection by remember { mutableStateOf(false) }
+    var gridDeleteRel by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(message) {
         if (message != null) {
@@ -184,6 +204,30 @@ fun App(controller: DesktopAppController) {
     // filter), so it is recomputed whenever the index or the filter changes.
     val viewerPhotos = remember(snapshot, folderRel, browseQuery, includeSubtree) {
         controller.photosIn(folderRel, browseQuery, includeSubtree)
+    }
+
+    // The two item lists the keyboard focus cursor walks: direct child
+    // containers first, then the filtered photo grid (2 columns).
+    val browseChildren = snapshot.containersByParent[folderRel].orEmpty()
+    val browsePhotos = viewerPhotos
+
+    // Multi-selection is per folder: leaving it drops the selection and the
+    // cursor. A changed filter hides selected tiles, so clear there too
+    // (same rule as Android's onSearchQueryChange).
+    LaunchedEffect(folderRel) {
+        controller.onFolderChanged()
+        focus = null
+    }
+    LaunchedEffect(browseQuery, includeSubtree) {
+        controller.clearSelection()
+    }
+    LaunchedEffect(showGlobalSearch, showTrash) {
+        browseSearchFocused = false
+        focus = null
+    }
+    // Keep the cursor on a real item whenever either list changes.
+    LaunchedEffect(browseChildren, browsePhotos) {
+        focus = clampBrowseFocus(focus, browseChildren.size, browsePhotos.size)
     }
 
     // Opening from global search: the target folder/filter may still be
@@ -312,29 +356,128 @@ fun App(controller: DesktopAppController) {
             .fillMaxSize()
             .focusRequester(focusRequester)
             .focusable()
-            // Esc cancels an in-flight drag; preview so it also wins while a
-            // text field (search / dialog) holds focus.
+            // Keyboard navigation over the browse surface plus Esc. A preview
+            // handler so it owns the keys before the focused child; text fields,
+            // the viewer and the other views are guarded out explicitly below.
             .onPreviewKeyEvent { event ->
-                if (event.type == KeyEventType.KeyDown &&
-                    event.key == Key.Escape &&
-                    dragController.payload != null
-                ) {
-                    dragController.end()
-                    true
-                } else {
-                    false
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+
+                // Esc: cancel an in-flight drag first, else clear the selection.
+                if (event.key == Key.Escape) {
+                    if (dragController.payload != null) {
+                        dragController.end()
+                        return@onPreviewKeyEvent true
+                    }
+                    if (controller.selectedPhotoRels.value.isNotEmpty()) {
+                        controller.clearSelection()
+                        return@onPreviewKeyEvent true
+                    }
+                    return@onPreviewKeyEvent false
+                }
+
+                // Arrows/Enter/F2/Delete/Ctrl+A belong to the browse surface
+                // only: a focused search field, the viewer, the trash view or
+                // the global search must keep their own key handling.
+                if (browseSearchFocused || viewerIndex != null || showTrash || showGlobalSearch) {
+                    return@onPreviewKeyEvent false
+                }
+
+                val containerCount = browseChildren.size
+                val photoCount = browsePhotos.size
+                when {
+                    event.key == Key.DirectionUp || event.key == Key.DirectionDown ||
+                        event.key == Key.DirectionLeft || event.key == Key.DirectionRight -> {
+                        val direction = when (event.key) {
+                            Key.DirectionUp -> FocusDirection.UP
+                            Key.DirectionDown -> FocusDirection.DOWN
+                            Key.DirectionLeft -> FocusDirection.LEFT
+                            else -> FocusDirection.RIGHT
+                        }
+                        focus = moveBrowseFocus(focus, direction, containerCount, photoCount)
+                        true
+                    }
+
+                    event.key == Key.MoveHome -> {
+                        focus = initialBrowseFocus(containerCount, photoCount)
+                        true
+                    }
+
+                    event.key == Key.MoveEnd -> {
+                        focus = endBrowseFocus(containerCount, photoCount)
+                        true
+                    }
+
+                    event.key == Key.Enter -> when (val current = focus) {
+                        null -> false
+                        else -> {
+                            when (current.section) {
+                                FocusSection.CONTAINERS -> browseChildren.getOrNull(current.index)
+                                    ?.let { selectedFolder = it.relPath }
+                                FocusSection.PHOTOS -> if (current.index in browsePhotos.indices) {
+                                    viewerIndex = current.index
+                                }
+                            }
+                            true
+                        }
+                    }
+
+                    event.key == Key.F2 -> when (val current = focus) {
+                        null -> false
+                        else -> {
+                            when (current.section) {
+                                FocusSection.CONTAINERS -> browseChildren.getOrNull(current.index)
+                                    ?.let { renameTarget = it }
+                                FocusSection.PHOTOS -> browsePhotos.getOrNull(current.index)
+                                    ?.let { editPhotoRel = it.relPath }
+                            }
+                            true
+                        }
+                    }
+
+                    event.key == Key.Delete -> {
+                        if (controller.selectedPhotoRels.value.isNotEmpty()) {
+                            confirmDeleteSelection = true
+                            true
+                        } else {
+                            when (val current = focus) {
+                                null -> false
+                                else -> {
+                                    when (current.section) {
+                                        FocusSection.CONTAINERS -> browseChildren.getOrNull(current.index)
+                                            ?.let { deleteTarget = it }
+                                        FocusSection.PHOTOS -> browsePhotos.getOrNull(current.index)
+                                            ?.let { gridDeleteRel = it.relPath }
+                                    }
+                                    true
+                                }
+                            }
+                        }
+                    }
+
+                    event.key == Key.A && event.isCtrlPressed -> {
+                        controller.selectAllInCurrentFolder(browsePhotos.map { it.relPath })
+                        true
+                    }
+
+                    else -> false
                 }
             }
             // The gesture source (a tile or row) can be disposed by a
             // spring-loaded folder change mid-drag. This root node stays
             // composed and observes the pointer in the Initial pass (never
             // consuming), so the in-flight session keeps following the mouse
-            // and ends with the drop on release.
+            // and ends with the drop on release. It also records the latest
+            // Ctrl/Shift state for the tiles' modifier-aware clicks.
             .pointerInput(dragController) {
                 try {
                     awaitPointerEventScope {
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
+                            val modifiers = event.keyboardModifiers
+                            pointerModifiers.value = PointerModifiers(
+                                ctrl = modifiers.isCtrlPressed,
+                                shift = modifiers.isShiftPressed,
+                            )
                             if (dragController.payload == null) continue
                             event.changes.firstOrNull()?.let { change ->
                                 dragController.pointer = change.position
@@ -474,6 +617,10 @@ fun App(controller: DesktopAppController) {
                     dragOwner = dragOwner,
                     gridState = gridState,
                     onGridBounds = { gridBounds = it },
+                    selectedPhotoRels = selectedPhotoRels,
+                    focus = focus,
+                    pointerModifiers = pointerModifiers,
+                    onSearchFocusChanged = { browseSearchFocused = it },
                 )
             }
         }
@@ -639,6 +786,56 @@ fun App(controller: DesktopAppController) {
                     },
                 )
             }
+        }
+
+        // Delete requested from the keyboard focus cursor (no viewer open):
+        // the same confirm as the viewer's, without the page advance.
+        gridDeleteRel?.let { rel ->
+            val photo = snapshot.allPhotos.firstOrNull { it.relPath == rel }
+            if (photo == null) {
+                LaunchedEffect(rel) { gridDeleteRel = null }
+            } else {
+                ConfirmDialog(
+                    title = DesktopStrings.DELETE_PHOTO_TITLE,
+                    message = (if (trashEnabled) {
+                        DesktopStrings.DELETE_PHOTO_MESSAGE
+                    } else {
+                        DesktopStrings.DELETE_PHOTO_MESSAGE_PERMANENT
+                    }).format(photo.description),
+                    confirmLabel = DesktopStrings.DELETE,
+                    onDismiss = { gridDeleteRel = null },
+                    onConfirm = {
+                        gridDeleteRel = null
+                        scope.launch {
+                            controller.deletePhoto(rel)
+                            message = DesktopStrings.MSG_PHOTO_DELETED
+                        }
+                    },
+                )
+            }
+        }
+
+        // One confirmation for the whole multi-selection; the controller then
+        // loops the per-photo delete with the configured trash semantics.
+        if (confirmDeleteSelection) {
+            val count = selectedPhotoRels.size
+            ConfirmDialog(
+                title = DesktopStrings.DELETE,
+                message = (if (trashEnabled) {
+                    DesktopStrings.DELETE_SELECTED_CONFIRM
+                } else {
+                    DesktopStrings.DELETE_SELECTED_CONFIRM_PERMANENT
+                }).format(count),
+                confirmLabel = DesktopStrings.DELETE,
+                onDismiss = { confirmDeleteSelection = false },
+                onConfirm = {
+                    confirmDeleteSelection = false
+                    scope.launch {
+                        controller.deleteSelectedPhotos()
+                        message = DesktopStrings.DELETED_SELECTED.format(count)
+                    }
+                },
+            )
         }
 
         photoMoveRel?.let { rel ->
@@ -896,11 +1093,30 @@ private fun BrowseView(
     dragOwner: String,
     gridState: LazyGridState,
     onGridBounds: (Rect) -> Unit,
+    selectedPhotoRels: Set<String>,
+    focus: BrowseFocus?,
+    pointerModifiers: androidx.compose.runtime.State<PointerModifiers>,
+    onSearchFocusChanged: (Boolean) -> Unit,
 ) {
     val snapshot by controller.snapshot.collectAsState()
     val children = snapshot.containersByParent[folderRel].orEmpty()
     val photos = controller.photosIn(folderRel, query, includeSubtree)
     val isRoot = folderRel.isEmpty()
+
+    // Keep the focused grid item on screen as the keyboard cursor moves.
+    // The grid index counts the headers and the search row that precede the
+    // photos, so it is derived from the same conditional structure below.
+    LaunchedEffect(focus) {
+        val current = focus ?: return@LaunchedEffect
+        val containerBlock = if (children.isNotEmpty()) 1 + children.size else 0
+        val photoBase = containerBlock + 1 + if (photos.isNotEmpty()) 1 else 0
+        val itemIndex = when (current.section) {
+            FocusSection.CONTAINERS ->
+                if (children.isNotEmpty()) 1 + current.index else return@LaunchedEffect
+            FocusSection.PHOTOS -> photoBase + current.index
+        }
+        gridState.animateScrollToItem(itemIndex.coerceAtLeast(0))
+    }
 
     if (children.isEmpty() && photos.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -932,7 +1148,7 @@ private fun BrowseView(
             item(key = "containers-header", span = { GridItemSpan(maxLineSpan) }) {
                 SectionHeader(DesktopStrings.CONTAINERS_SECTION)
             }
-            items(children, key = { it.relPath }) { container ->
+            itemsIndexed(children, key = { _, container -> container.relPath }) { index, container ->
                 val payload = dragController.payload
                 val containerDrag = payload?.kind == DragKind.CONTAINER
                 val draggedRel = if (containerDrag) payload?.relPaths?.firstOrNull() else null
@@ -946,9 +1162,15 @@ private fun BrowseView(
                     highlighted = payload != null && dragController.hoveredTarget == container.relPath,
                     blocked = containerDrag && container.relPath in dragController.blockedTargets,
                     dragging = container.relPath == draggedRel,
+                    focused = focus?.section == FocusSection.CONTAINERS && focus.index == index,
                     dragController = dragController,
                     dragOwner = dragOwner,
-                    onOpen = { onOpenContainer(container.relPath) },
+                    // Containers are not multi-selected in v1: a Ctrl/Shift
+                    // click on a row must not navigate into it either.
+                    onOpen = {
+                        val modifiers = pointerModifiers.value
+                        if (!modifiers.ctrl && !modifiers.shift) onOpenContainer(container.relPath)
+                    },
                     onRename = { onRename(container) },
                     onMove = { onMove(container.relPath) },
                     onSetCover = { onSetCover(container.relPath) },
@@ -966,6 +1188,7 @@ private fun BrowseView(
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
+                        .onFocusChanged { onSearchFocusChanged(it.isFocused) }
                         .padding(top = 8.dp),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
@@ -983,7 +1206,19 @@ private fun BrowseView(
                     photo = photo,
                     controller = controller,
                     dragController = dragController,
-                    onClick = { onOpenPhoto(photo, index) },
+                    selected = photo.relPath in selectedPhotoRels,
+                    focused = focus?.section == FocusSection.PHOTOS && focus.index == index,
+                    dragSelection = selectedPhotoRels,
+                    onClick = {
+                        // Modifier-aware click: read the tracker's CURRENT
+                        // value (the state object, not a captured boolean).
+                        val modifiers = pointerModifiers.value
+                        when {
+                            modifiers.shift -> controller.rangeSelectTo(photo.relPath, photos.map { it.relPath })
+                            modifiers.ctrl -> controller.toggleSelect(photo.relPath)
+                            else -> onOpenPhoto(photo, index)
+                        }
+                    },
                 )
             }
         } else if (query.isNotBlank()) {
@@ -1010,6 +1245,7 @@ private fun ContainerRow(
     highlighted: Boolean,
     blocked: Boolean,
     dragging: Boolean,
+    focused: Boolean,
     dragController: DragController,
     dragOwner: String,
     onOpen: () -> Unit,
@@ -1038,6 +1274,13 @@ private fun ContainerRow(
                     Modifier
                         .background(DropHighlightColor.copy(alpha = 0.12f))
                         .border(2.dp, DropHighlightColor, RoundedCornerShape(8.dp))
+                } else {
+                    Modifier
+                },
+            )
+            .then(
+                if (focused) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
                 } else {
                     Modifier
                 },
@@ -1139,6 +1382,9 @@ private fun PhotoTile(
     photo: DesktopIndex.IndexedPhoto,
     controller: DesktopAppController,
     dragController: DragController,
+    selected: Boolean,
+    focused: Boolean,
+    dragSelection: Set<String>,
     onClick: () -> Unit,
 ) {
     // Gesture coordinates are local to this tile; the session (ghost + drop
@@ -1148,6 +1394,22 @@ private fun PhotoTile(
         modifier = Modifier
             .aspectRatio(1f)
             .onGloballyPositioned { tileOrigin = it.boundsInRoot().topLeft }
+            // Teal ring while selected (same hue as the drag-hover cue),
+            // primary outline while the keyboard cursor rests here.
+            .then(
+                if (selected) {
+                    Modifier.border(3.dp, DropHighlightColor, RoundedCornerShape(4.dp))
+                } else {
+                    Modifier
+                },
+            )
+            .then(
+                if (focused) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(6.dp))
+                } else {
+                    Modifier
+                },
+            )
             .clickable(onClick = onClick)
             .pointerInput(photo.relPath) {
                 // Press + move past slop starts a photo drag; press + release
@@ -1155,10 +1417,21 @@ private fun PhotoTile(
                 // drag detector consumes the moves).
                 detectDragGestures(
                     onDragStart = { offset ->
+                        // Dragging a selected tile carries the WHOLE selection;
+                        // any other tile (selected or not) carries just itself.
+                        val paths = if (photo.relPath in dragSelection) {
+                            dragSelection.toList()
+                        } else {
+                            listOf(photo.relPath)
+                        }
                         dragController.start(
                             DragPayload(
-                                relPaths = listOf(photo.relPath),
-                                label = photo.description,
+                                relPaths = paths,
+                                label = if (paths.size > 1) {
+                                    DesktopStrings.DRAG_COUNT.format(paths.size)
+                                } else {
+                                    photo.description
+                                },
                                 kind = DragKind.PHOTO,
                             ),
                         )
@@ -1361,7 +1634,8 @@ private fun MoveUpChip(
 /**
  * The floating ghost card under the pointer while a drag is in flight: the
  * dragged photo's thumbnail (decoded async with a placeholder) or a folder
- * icon plus the payload label. Single-item payloads never need a count.
+ * icon plus the payload label. A multi-photo payload arrives with a count
+ * label; a single one shows the photo description.
  */
 @Composable
 private fun DragGhost(
@@ -1416,6 +1690,89 @@ private const val AUTO_SCROLL_EDGE_DP = 64f
 /** Auto-scroll speed at the very edge and at [AUTO_SCROLL_EDGE_DP] away (dp/frame). */
 private const val AUTO_SCROLL_MIN_DP = 8f
 private const val AUTO_SCROLL_MAX_DP = 30f
+
+/** The subset of keyboard modifiers the browse surface reacts to on click. */
+private data class PointerModifiers(val ctrl: Boolean = false, val shift: Boolean = false)
+
+/** Which list the keyboard focus cursor is walking. */
+private enum class FocusSection { CONTAINERS, PHOTOS }
+
+/** One focusable item: a container row or a photo tile (by list index). */
+private data class BrowseFocus(val section: FocusSection, val index: Int)
+
+/** Arrow-key direction over the two lists. */
+private enum class FocusDirection { UP, DOWN, LEFT, RIGHT }
+
+/** First focusable item: containers win, then photos. */
+private fun initialBrowseFocus(containerCount: Int, photoCount: Int): BrowseFocus? = when {
+    containerCount > 0 -> BrowseFocus(FocusSection.CONTAINERS, 0)
+    photoCount > 0 -> BrowseFocus(FocusSection.PHOTOS, 0)
+    else -> null
+}
+
+/** Last focusable item: photos win, then containers. */
+private fun endBrowseFocus(containerCount: Int, photoCount: Int): BrowseFocus? = when {
+    photoCount > 0 -> BrowseFocus(FocusSection.PHOTOS, photoCount - 1)
+    containerCount > 0 -> BrowseFocus(FocusSection.CONTAINERS, containerCount - 1)
+    else -> null
+}
+
+/**
+ * Moves [focus] one step in [direction]. The container list is a single
+ * column (so only Up/Down): Down past its last row crosses into the photo
+ * grid and Up from the grid's top row crosses back. The grid runs two
+ * columns wide, so Left/Right step by one and Up/Down step by two; the
+ * first/last cell of each column clamps rather than wrapping.
+ */
+private fun moveBrowseFocus(
+    focus: BrowseFocus?,
+    direction: FocusDirection,
+    containerCount: Int,
+    photoCount: Int,
+): BrowseFocus? {
+    if (focus == null) return initialBrowseFocus(containerCount, photoCount)
+    return when (focus.section) {
+        FocusSection.CONTAINERS -> when (direction) {
+            FocusDirection.UP -> BrowseFocus(FocusSection.CONTAINERS, (focus.index - 1).coerceAtLeast(0))
+            FocusDirection.DOWN -> when {
+                focus.index + 1 < containerCount -> BrowseFocus(FocusSection.CONTAINERS, focus.index + 1)
+                photoCount > 0 -> BrowseFocus(FocusSection.PHOTOS, 0)
+                else -> focus
+            }
+            FocusDirection.LEFT, FocusDirection.RIGHT -> focus
+        }
+        FocusSection.PHOTOS -> when (direction) {
+            FocusDirection.LEFT -> BrowseFocus(FocusSection.PHOTOS, (focus.index - 1).coerceAtLeast(0))
+            FocusDirection.RIGHT -> BrowseFocus(FocusSection.PHOTOS, (focus.index + 1).coerceAtMost(photoCount - 1))
+            FocusDirection.UP -> when {
+                focus.index >= 2 -> BrowseFocus(FocusSection.PHOTOS, focus.index - 2)
+                containerCount > 0 -> BrowseFocus(FocusSection.CONTAINERS, containerCount - 1)
+                else -> focus
+            }
+            FocusDirection.DOWN -> when {
+                focus.index + 2 < photoCount -> BrowseFocus(FocusSection.PHOTOS, focus.index + 2)
+                else -> focus
+            }
+        }
+    }
+}
+
+/** Clamps a stale cursor onto a still-existing list after the data changes. */
+private fun clampBrowseFocus(focus: BrowseFocus?, containerCount: Int, photoCount: Int): BrowseFocus? {
+    if (focus == null) return null
+    return when (focus.section) {
+        FocusSection.CONTAINERS -> when {
+            containerCount > 0 -> BrowseFocus(FocusSection.CONTAINERS, focus.index.coerceIn(0, containerCount - 1))
+            photoCount > 0 -> BrowseFocus(FocusSection.PHOTOS, 0)
+            else -> null
+        }
+        FocusSection.PHOTOS -> when {
+            photoCount > 0 -> BrowseFocus(FocusSection.PHOTOS, focus.index.coerceIn(0, photoCount - 1))
+            containerCount > 0 -> BrowseFocus(FocusSection.CONTAINERS, 0)
+            else -> null
+        }
+    }
+}
 
 /**
  * Ancestor relative paths of [folderRel], root first (`""`), excluding the

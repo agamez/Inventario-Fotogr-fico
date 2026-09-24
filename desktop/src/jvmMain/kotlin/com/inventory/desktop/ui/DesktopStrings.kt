@@ -131,6 +131,16 @@ object DesktopStrings {
     const val DELETE_PHOTO_MESSAGE_PERMANENT =
         "\"%s\" will be deleted from disk. This cannot be undone."
 
+    // Desktop multi-select (Ctrl/Shift+click + keyboard) — wording mirrors
+    // Android's selection/delete_photos_confirm resources where they exist.
+    const val SELECT_ALL = "Select all"
+    const val CLEAR_SELECTION = "Clear selection"
+    const val DELETE_SELECTED_CONFIRM = "%1\$d photo(s) will be moved to the trash."
+    const val DELETE_SELECTED_CONFIRM_PERMANENT =
+        "%1\$d photo(s) will be permanently deleted. This cannot be undone."
+    const val DELETED_SELECTED = "%1\$d photo(s) deleted"
+    const val DRAG_COUNT = "%1\$d items"
+
     // Trash setting (settings dialog) — mirrors Android's trash_enable*
     const val TRASH_ENABLE = "Move deleted items to trash"
     const val TRASH_ENABLE_HELP =

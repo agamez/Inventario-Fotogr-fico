@@ -163,7 +163,34 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
         )
     }
 
-    // 13. Trash segment (soft delete / undo) — BOTH modes. OFF (the default):
+    // 13. Multi-select deletion, trash OFF (the default): selecting two of
+    //     three photos and running deleteSelectedPhotos removes exactly
+    //     those two from disk, keeps the third and clears the selection.
+    val selectionFolder = rebuilt.createFolder("", "Selection").first
+    report.check("selection container created", selectionFolder == "Selection", "got $selectionFolder")
+    if (selectionFolder != null) {
+        rebuilt.importPhoto(selectionFolder, syntheticJpeg(), "Sel one", null)
+        rebuilt.importPhoto(selectionFolder, syntheticJpeg(), "Sel two", null)
+        rebuilt.importPhoto(selectionFolder, syntheticJpeg(), "Keep me", null)
+        val selected = rebuilt.photosIn(selectionFolder, "", includeSubtree = false).map { it.relPath }
+        report.check("selection lists three photos", selected.size == 3, "got $selected")
+        if (selected.size == 3) {
+            rebuilt.toggleSelect(selected[0])
+            rebuilt.toggleSelect(selected[1])
+            report.check("selection holds two", rebuilt.selectedPhotoRels.value.size == 2)
+            val deleted = rebuilt.deleteSelectedPhotos()
+            report.check("selection delete outcome", deleted == DesktopAppController.Outcome.Deleted, "got $deleted")
+            report.check(
+                "trash off: selected photos gone from disk",
+                !File(folder, selected[0]).exists() && !File(folder, selected[1]).exists(),
+            )
+            report.check("trash off: unselected photo kept", File(folder, selected[2]).isFile)
+            report.check("selection cleared after delete", rebuilt.selectedPhotoRels.value.isEmpty())
+            report.check("trash off: selection delete left no .trash", !File(folder, TrashManager.TRASH_DIR).exists())
+        }
+    }
+
+    // 14. Trash segment (soft delete / undo) — BOTH modes. OFF (the default):
     //     deletions are permanent and leave no .trash behind. ON: an entry is
     //     moved into a stamp folder with its sidecar, restored to its original
     //     parent, then trashed again and deleted forever.
@@ -224,9 +251,33 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
         controller.emptyTrash()
         report.check("emptyTrash leaves nothing", controller.trashEntries.value.isEmpty(), "got ${controller.trashEntries.value.map { it.name }}")
     }
+
+    // Multi-select deletion with the trash ON: both selected photos leave
+    // their folder and appear as two photo entries in the trash listing.
+    val selectionTrashFolder = controller.createFolder("", "SelectTrash").first
+    report.check("trash selection container created", selectionTrashFolder == "SelectTrash", "got $selectionTrashFolder")
+    if (selectionTrashFolder != null) {
+        controller.importPhoto(selectionTrashFolder, syntheticJpeg(), "Trash one", null)
+        controller.importPhoto(selectionTrashFolder, syntheticJpeg(), "Trash two", null)
+        val ordered = controller.photosIn(selectionTrashFolder, "", includeSubtree = false).map { it.relPath }
+        report.check("trash selection lists two photos", ordered.size == 2, "got $ordered")
+        if (ordered.size == 2) {
+            ordered.forEach { controller.toggleSelect(it) }
+            report.check("trash selection holds two", controller.selectedPhotoRels.value.size == 2)
+            controller.deleteSelectedPhotos()
+            report.check("trash selection gone from its folder", ordered.none { File(folder, it).exists() })
+            report.check("trash selection cleared", controller.selectedPhotoRels.value.isEmpty())
+            report.check(
+                "trash selection listed as two photo entries",
+                controller.trashEntries.value.count { it.kind == TrashManager.KIND_PHOTO } == 2,
+                "got ${controller.trashEntries.value.map { it.kind }}",
+            )
+        }
+        controller.emptyTrash()
+    }
     controller.setTrashEnabled(false)
 
-    // 14. AI auto-label segment against an in-test loopback mock server
+    // 15. AI auto-label segment against an in-test loopback mock server
     //     (fully self-contained, no external services). The controller is
     //     reused: configure AI, stage one photo, await the suggestion,
     //     save it, then turn AI back off and tear the mock down.
@@ -263,7 +314,7 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
     controller.setAiEnabled(false)
     report.check("AI disabled cleans the gate", controller.aiConfig() == null)
 
-    // 15. Report export: the shared generator writes both documents into the
+    // 16. Report export: the shared generator writes both documents into the
     //     inventory root; the UI confirms with the HTML path. Content markers
     //     prove the tree was walked, paths URL-encoded and EXIF read.
     val exported = controller.exportReport()

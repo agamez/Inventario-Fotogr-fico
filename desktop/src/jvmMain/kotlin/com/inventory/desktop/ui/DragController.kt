@@ -9,7 +9,12 @@ import androidx.compose.ui.geometry.Rect
 /** Drop-target id prefix of the ancestor chips under the action bar. */
 const val ANCESTOR_TARGET_PREFIX = "ancestor:"
 
-/** What a drag is carrying: photos (default) or a single container folder. */
+/**
+ * What a drag is carrying: photos (default) or a single container folder.
+ * A photo drag mirrors Android's [DragPayload] and may carry a WHOLE
+ * multi-selection in [DragPayload.relPaths]; a container drag always
+ * carries exactly one path.
+ */
 enum class DragKind { PHOTO, CONTAINER }
 
 /** What a drag is carrying: the kind, the relative paths and the ghost label. */
