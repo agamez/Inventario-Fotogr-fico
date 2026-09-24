@@ -52,9 +52,11 @@ private val windowIconPainter: Painter? by lazy {
  * the verification path that needs no display. With
  * `--ai-test <baseUrl> <apiKey> <model> [imagePath] [language]` it
  * exercises the shared AI client against a live OpenAI-compatible server
- * and exits 0/1. Otherwise it opens the
- * 1100x750 window: it loads the saved root from [DesktopConfig], shows
- * the folder gate when none is usable, and otherwise builds the
+ * and exits 0/1. With `--import <containerRelPath> <file1> [file2 …]` it
+ * imports the files into that container of the saved inventory root and
+ * exits 0/1 — the desktop twin of the Android share target. Otherwise it
+ * opens the 1100x750 window: it loads the saved root from [DesktopConfig],
+ * shows the folder gate when none is usable, and otherwise builds the
  * [DesktopAppController] (watcher + initial index rebuild) and hands it
  * to the [App] UI.
  *
@@ -75,6 +77,9 @@ fun main(args: Array<String>) {
     }
     if (args.firstOrNull() == "--ai-test") {
         System.exit(runAiTest(args.drop(1)))
+    }
+    if (args.firstOrNull() == "--import") {
+        System.exit(runImport(args.drop(1)))
     }
     application {
         // The config read is one synchronous properties file — done once
@@ -111,6 +116,58 @@ fun main(args: Array<String>) {
             }
         }
     }
+}
+
+/**
+ * `--import <containerRelPath> <file1> [file2 …]` — the desktop's
+ * platform-idiomatic inbound-import path, the CLI twin of the Android
+ * share target. Reads the saved inventory root from [DesktopConfig], then
+ * imports every file into the container at `<containerRelPath>` (a
+ * `/`-joined path relative to the root; `""` is the root itself),
+ * transcoding non-JPEG images to JPEG and naming each stored photo after
+ * its file name minus the extension.
+ *
+ * Prints `OK <file> -> <finalRelPath>` or `FAIL <file>: <reason>` per
+ * file and returns 0 when every file imported, 1 otherwise (also for a
+ * missing root config, a missing container or too few arguments).
+ */
+private fun runImport(arguments: List<String>): Int {
+    if (arguments.size < 2) {
+        System.err.println("usage: --import <containerRelPath> <file1> [file2 ...]")
+        return 1
+    }
+    val containerRel = arguments.first()
+    val files = arguments.drop(1).map(::File)
+    val root = DesktopConfig.default.loadRoot()
+    if (root == null) {
+        System.err.println("FAIL: no inventory folder configured — run the app and pick one first")
+        return 1
+    }
+    val container = if (containerRel.isEmpty()) root else File(root, containerRel)
+    if (!container.isDirectory) {
+        System.err.println("FAIL: container not found: $containerRel")
+        return 1
+    }
+    val controller = DesktopAppController(root)
+    var allOk = true
+    try {
+        runBlocking {
+            controller.refreshNow()
+            for (file in files) {
+                when (val result = controller.importFile(containerRel, file)) {
+                    is DesktopAppController.FileImportResult.Imported ->
+                        println("OK ${file.path} -> ${result.relPath}")
+                    is DesktopAppController.FileImportResult.Failed -> {
+                        allOk = false
+                        println("FAIL ${file.path}: ${result.reason}")
+                    }
+                }
+            }
+        }
+    } finally {
+        controller.stop()
+    }
+    return if (allOk) 0 else 1
 }
 
 /**

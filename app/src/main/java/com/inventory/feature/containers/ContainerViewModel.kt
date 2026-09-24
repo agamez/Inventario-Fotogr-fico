@@ -16,6 +16,7 @@ import com.inventory.cache.CacheEntry
 import com.inventory.cache.ChildCounts
 import com.inventory.cache.InventoryScanner
 import com.inventory.settings.TrashPrefs
+import com.inventory.share.SharedImage
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.InventoryStore
 import com.inventory.storage.StorageMode
@@ -709,6 +710,34 @@ class ContainerViewModel @Inject constructor(
     fun discardPendingPhotos() {
         _pendingQueue.value = emptyList()
         _aiSuggestions.value = emptyMap()
+    }
+
+    /**
+     * Stores images handed in through the Android share target into
+     * [folderRel]: each is already a JPEG ([com.inventory.storage.ImageTranscoder]
+     * ran in the activity), its description is the shared file's EXIF
+     * ImageDescription when present, else the display name minus its
+     * extension. Returns true when at least one photo landed; false when
+     * every entry was refused (blank description, undecodable) or the
+     * destination vanished. The caller confirms/navigates.
+     */
+    suspend fun importSharedPhotos(folderRel: String, images: List<SharedImage>): Boolean {
+        if (images.isEmpty()) return false
+        var imported = 0
+        for (image in images) {
+            val description = image.exifDescription?.trim()?.ifEmpty { null }
+                ?: image.displayName.substringBeforeLast('.', image.displayName)
+            val outcome = store.addPhoto(
+                folderRel = folderRel,
+                bytes = image.bytes,
+                description = description,
+                note = null,
+                takenAt = System.currentTimeMillis(),
+            )
+            if (outcome == InventoryStore.AddOutcome.Success) imported++
+        }
+        scanner.rescan()
+        return imported > 0
     }
 
     fun deletePhoto(relPath: String) {

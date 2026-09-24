@@ -14,6 +14,7 @@ import com.inventory.storage.COVER_FILE_NAME
 import com.inventory.storage.ExifEditor
 import com.inventory.storage.Filenames
 import com.inventory.storage.FileBackend
+import com.inventory.storage.ImageTranscoder
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.StorageBackend
 import com.inventory.storage.TrashManager
@@ -59,6 +60,8 @@ class DesktopAppController(
     private val exifEditor: ExifEditor = DesktopExifEditor(),
     /** The persisted local config (root + AI settings); injectable for tests. */
     private val config: DesktopConfig = DesktopConfig.default,
+    /** Non-JPEG images (PNG/WebP) are transcoded to JPEG before they are stored. */
+    private val transcoder: ImageTranscoder = ImageIoImageTranscoder(),
 ) {
 
     val backend: StorageBackend = FileBackend(root = rootDir, accessCheck = { true }, exif = exifEditor)
@@ -400,10 +403,23 @@ class DesktopAppController(
         bytes: ByteArray,
         rawDescription: String,
         rawNote: String?,
-    ): Outcome = withContext(Dispatchers.IO) {
+    ): Outcome = importPhotoReturningPath(folderRel, bytes, rawDescription, rawNote).second
+
+    /**
+     * [importPhoto]'s body, also returning the ACTUAL stored relative path
+     * (the CLI `--import` mode prints it; the queue ignores it).
+     */
+    private suspend fun importPhotoReturningPath(
+        folderRel: String,
+        bytes: ByteArray,
+        rawDescription: String,
+        rawNote: String?,
+    ): Pair<String?, Outcome> = withContext(Dispatchers.IO) {
         val description = rawDescription.trim()
-        if (description.isEmpty()) return@withContext Outcome.BlankName
-        if (bytes.isEmpty() || !exifEditor.looksLikeJpeg(bytes)) return@withContext Outcome.InvalidImage
+        if (description.isEmpty()) return@withContext null to Outcome.BlankName
+        if (bytes.isEmpty() || !exifEditor.looksLikeJpeg(bytes)) {
+            return@withContext null to Outcome.InvalidImage
+        }
         val stamped = try {
             exifEditor.withExif(
                 bytes,
@@ -412,15 +428,50 @@ class DesktopAppController(
                 setDateTakenIfMissing = System.currentTimeMillis(),
             )
         } catch (exception: IOException) {
-            return@withContext Outcome.InvalidImage
+            return@withContext null to Outcome.InvalidImage
         } catch (exception: RuntimeException) {
-            return@withContext Outcome.InvalidImage
+            return@withContext null to Outcome.InvalidImage
         }
         val name = uniquePhotoName(folderRel, Filenames.sanitize(description))
-        runCatching { backend.writePhotoBytes(joinRel(folderRel, name), stamped) }
-            .onFailure { return@withContext Outcome.InvalidImage }
+        val target = joinRel(folderRel, name)
+        runCatching { backend.writePhotoBytes(target, stamped) }
+            .onFailure { return@withContext null to Outcome.InvalidImage }
         index.rebuild()
-        Outcome.Saved
+        target to Outcome.Saved
+    }
+
+    /** One file's CLI import result: the stored relative path, or a reason. */
+    sealed interface FileImportResult {
+        data class Imported(val relPath: String) : FileImportResult
+        data class Failed(val reason: String) : FileImportResult
+    }
+
+    /**
+     * Imports [file] into [folderRel] for the CLI `--import` mode: reads the
+     * file, transcodes non-JPEG images to JPEG ([transcoder]) and stores it
+     * with description = the file name minus its extension. Returns the
+     * stored relative path, or a reason the file was refused.
+     */
+    suspend fun importFile(folderRel: String, file: File): FileImportResult = withContext(Dispatchers.IO) {
+        if (!file.isFile) return@withContext FileImportResult.Failed("no such file")
+        val raw = runCatching { file.readBytes() }.getOrNull()
+            ?: return@withContext FileImportResult.Failed("cannot read file")
+        val jpeg = runCatching { transcoder.toJpeg(raw) }.getOrElse {
+            return@withContext FileImportResult.Failed("not a decodable image")
+        }
+        val description = file.name.substringBeforeLast('.', file.name).trim()
+        if (description.isEmpty()) return@withContext FileImportResult.Failed("blank file name")
+        val (relPath, outcome) = importPhotoReturningPath(folderRel, jpeg, description, null)
+        if (outcome == Outcome.Saved && relPath != null) {
+            FileImportResult.Imported(relPath)
+        } else {
+            FileImportResult.Failed(
+                when (outcome) {
+                    Outcome.BlankName -> "blank description"
+                    else -> "not a valid image"
+                },
+            )
+        }
     }
 
     /**

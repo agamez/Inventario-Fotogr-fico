@@ -157,4 +157,11 @@
     <string name="export_report">Export report</string>
     <string name="report_written">Report written to %1$s</string>
     <string name="report_export_failed">Report export failed</string>
+
+    <!-- Inbound image share (ACTION_SEND/SEND_MULTIPLE) -->
+    <string name="share_target_title">Add to Photo Inventory</string>
+    <string name="pick_container">Pick a container</string>
+    <string name="share_imported">Imported to %1$s</string>
+    <string name="share_import_failed">Import failed</string>
+    <string name="share_no_images">No images shared</string>
 </resources>

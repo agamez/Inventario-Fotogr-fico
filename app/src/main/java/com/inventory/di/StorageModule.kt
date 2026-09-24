@@ -3,9 +3,11 @@ package com.inventory.di
 import android.content.Context
 import android.os.Environment
 import com.inventory.storage.AndroidExifEditor
+import com.inventory.storage.AndroidImageTranscoder
 import com.inventory.storage.BackendEntry
 import com.inventory.storage.ExifEditor
 import com.inventory.storage.FileBackend
+import com.inventory.storage.ImageTranscoder
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.PhotoMeta
 import com.inventory.storage.ROOT_FOLDER_NAME
@@ -38,6 +40,15 @@ object StorageModule {
     @Provides
     @Singleton
     fun provideExifEditor(): ExifEditor = AndroidExifEditor()
+
+    /**
+     * The image format converter behind the Android share target: non-JPEG
+     * shared images (PNG/WebP) are transcoded to JPEG before they enter the
+     * inventory, whose one photo format is JPEG.
+     */
+    @Provides
+    @Singleton
+    fun provideImageTranscoder(): ImageTranscoder = AndroidImageTranscoder()
 
     @Provides
     @Singleton

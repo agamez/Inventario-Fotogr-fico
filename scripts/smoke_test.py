@@ -27,10 +27,11 @@ SAME disk tree, so every disk assertion is mode-agnostic. Run order:
      the chooser, then the full scenario battery: permission gate, root
      CRUD, drill nesting, camera/gallery flow + EXIF + byte-identity,
      search scopes, preview edit + multi-select move, cycle-proof moves,
-     covers, conflicts, PC edits adopted by Rescan (its cache-wipe step
-     re-answers the chooser too), drag-and-drop gestures (photo/container/
-     ancestor-chip/selection/BACK-cancel, all restored), and an exact-tree
-     disk audit.
+      covers, conflicts, PC edits adopted by Rescan (its cache-wipe step
+      re-answers the chooser too), drag-and-drop gestures (photo/container/
+      ancestor-chip/selection/BACK-cancel, all restored), the inbound image
+      share (SEND -> container picker -> import, JPEG passthrough + PNG->
+      JPEG transcode, container removed again), and an exact-tree disk audit.
 
   python3 scripts/smoke_test.py    # always pins emulator-5554 when present
 
@@ -912,6 +913,30 @@ def sheet_absent(needle, exact=True):
         if _sheet_title_y() is None: return False
     return sheet_find(needle, exact=exact) is None
 
+def share_pick_container(name, max_scrolls=6):
+    """Tap a container row in the share-target sheet ("Add to Photo
+    Inventory" / "Pick a container"), scrolling the 360dp-capped list down as
+    needed. The move-picker helpers key on "Move to"; this sheet has its own
+    wording and its list holds EVERY container, so a row below the fold needs
+    an explicit scroll."""
+    title = wait_for(text="Pick a container", timeout=10)
+    if title is None: return False
+    tb = _bounds(title.get("bounds", ""))
+    ty = tb[1] if tb else 0
+    for i in range(max_scrolls):
+        d = dump()
+        if d is None:
+            time.sleep(1.0); continue
+        for n in d.iter():
+            t = n.get("text", "")
+            b = _bounds(n.get("bounds", ""))
+            if not t or not b or b[1] < ty: continue
+            if t == name:
+                tap(n); return True
+        sh(f"input swipe {SW//2} {int(SH*0.80)} {SW//2} {int(SH*0.55)} 500")
+        time.sleep(0.7)
+    return False
+
 # ---------------------------------------------------------------- app setup
 
 def grant_storage_appops():
@@ -1258,6 +1283,36 @@ def seed_photo(rel, desc, note=None, date="2026:01:01 12:00:00"):
     im.save(tmp.name, "JPEG", exif=ex)
     adb("push", tmp.name, fp(rel), timeout=30)
     os.unlink(tmp.name)
+
+def make_png(width, height, color=(10, 200, 60)):
+    """A real PNG on a host buffer (the share-target PNG-transcode proof)."""
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buf, "PNG")
+    return buf.getvalue()
+
+def seed_media_image(name, data, mime):
+    """Push `data` to /sdcard/Pictures/<name>, register it in MediaStore and
+    return the content:// Uri a SEND intent should carry (None on failure).
+
+    `content insert` prints nothing and canonicalises `_data` to
+    /storage/emulated/0/..., so the row is looked back up by that canonical
+    path to learn its `_id`."""
+    sh("mkdir -p /sdcard/Pictures")
+    path = f"/sdcard/Pictures/{name}"
+    canonical = f"/storage/emulated/0/Pictures/{name}"
+    sh(f"content delete --uri content://media/external/images/media "
+       f"--where \"_data='{canonical}'\"")
+    tmp = tempfile.NamedTemporaryFile(suffix=os.path.splitext(name)[1], delete=False)
+    tmp.write(data); tmp.close()
+    adb("push", tmp.name, path, timeout=20)
+    os.unlink(tmp.name)
+    sh(f"content insert --uri content://media/external/images/media "
+       f"--bind _data:s:{path} --bind mime_type:s:{mime}")
+    out = sh(f"content query --uri content://media/external/images/media "
+             f"--projection _id --where \"_data='{canonical}'\"")
+    m = re.search(r"_id=(\d+)", out)
+    return f"content://media/external/images/media/{m.group(1)}" if m else None
 
 # ---------------------------------------------------------------- scenarios
 
@@ -2753,6 +2808,88 @@ def t_drag_drop():
         check("dnd7 selection exited", bool(texts_exact("Shelf A")))
     check("dnd7 back home", go_home())
 
+def t_share_target():
+    """Inbound image share (Feature 5): `am start` with a SEND intent opens
+    the app's container picker; picking a container imports the image with
+    the filename-derived description. A JPEG is stored without re-encoding
+    (pixels identical), a PNG is transcoded to JPEG with its dimensions
+    preserved (host-Pillow proof). The dedicated container is removed again
+    so the final disk audit is unchanged."""
+    mark("12b share target")
+    check("starts on home", go_home())
+    # A dedicated container keeps the shared photos out of the audited tree.
+    sh(f"mkdir -p {sq(fp('Share target'))}")
+    check("rescan adopts Share target", rescan_from_root())
+    check("UI lists Share target", wait_for(text="Share target", timeout=8) is not None)
+
+    # --- JPEG: no re-encode (pixels identical), filename-stem description.
+    jpg_uri = seed_media_image("share_sample.jpg", JPEG_1PX, "image/jpeg")
+    check("MediaStore seed carries a content URI (jpg)", jpg_uri is not None, str(jpg_uri))
+    if jpg_uri:
+        sh(f"am start -W -f 1 -a android.intent.action.SEND -t image/jpeg "
+           f"--eu android.intent.extra.STREAM {jpg_uri} -n {ACT} --user 0")
+        time.sleep(3.0)
+        check("share opens the container picker",
+              wait_for(text="Add to Photo Inventory", timeout=12) is not None)
+        check("picker lists Share target and picks it", share_pick_container("Share target"))
+        time.sleep(3.0)
+        check("share import snackbar (jpg)", snackbar_visible("Imported to", timeout=10))
+        check("navigated into Share target (jpg)", bool(texts_exact("Share target")))
+        jpg_file = fp("Share target", "share_sample.jpg")
+        jpg_stored = fs_exists(jpg_file)
+        check("disk: shared JPEG stored as share_sample.jpg", jpg_stored)
+        tj = exif_triple(jpg_file); EXIF_SAMPLES.append(("Share target/share_sample.jpg", tj))
+        check("EXIF: shared JPEG desc == filename stem", tj["desc"] == "share_sample", str(tj))
+        check("picked photo tile visible", wait_for(text="share_sample", timeout=8) is not None)
+        if jpg_stored:
+            jpg_data = fs_read(jpg_file)
+            check("share: JPEG payload not re-encoded (pixels identical)",
+                  pixel_key(jpg_data) == pixel_key(JPEG_1PX),
+                  "pixel data changed -> the JPEG was decoded/recompressed")
+        check("home before the PNG share", go_home())
+
+    # --- PNG: transcoded to JPEG, dimensions preserved.
+    png_uri = seed_media_image("share_png.png", make_png(6, 9), "image/png")
+    check("MediaStore seed carries a content URI (png)", png_uri is not None, str(png_uri))
+    if png_uri:
+        sh(f"am start -W -f 1 -a android.intent.action.SEND -t image/png "
+           f"--eu android.intent.extra.STREAM {png_uri} -n {ACT} --user 0")
+        time.sleep(3.0)
+        check("PNG share opens the picker",
+              wait_for(text="Add to Photo Inventory", timeout=12) is not None)
+        check("picker lists Share target and picks it (png)", share_pick_container("Share target"))
+        time.sleep(3.0)
+        check("share import snackbar (png)", snackbar_visible("Imported to", timeout=10))
+        png_file = fp("Share target", "share_png.jpg")
+        png_stored = fs_exists(png_file)
+        check("disk: shared PNG stored as share_png.jpg", png_stored)
+        tpg = exif_triple(png_file); EXIF_SAMPLES.append(("Share target/share_png.jpg", tpg))
+        check("EXIF: transcoded PNG desc == filename stem", tpg["desc"] == "share_png", str(tpg))
+        fmt = None; size = None
+        if png_stored:
+            png_data = fs_read(png_file)
+            from PIL import Image
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    im = Image.open(io.BytesIO(png_data))
+                    fmt = im.format
+                    size = im.size
+            except Exception as exc:  # noqa: BLE001 — surfaced in the failure detail
+                fmt = repr(exc)
+        check("Pillow: PNG converted to JPEG", fmt == "JPEG", f"format={fmt}")
+        check("Pillow: transcoded dimensions 6x9 preserved", size == (6, 9), str(size))
+        check("home after share target", go_home())
+
+    # cleanup: the shared photos + their container (the audit stays exact).
+    sh(f"rm -rf {sq(fp('Share target'))}")
+    for name in ("share_sample.jpg", "share_png.png"):
+        sh(f"rm -f /sdcard/Pictures/{name}")
+        sh(f"content delete --uri content://media/external/images/media "
+           f"--where \"_data='/storage/emulated/0/Pictures/{name}'\"")
+    check("disk: Share target removed", not fs_exists(fp("Share target")))
+    check("home after share cleanup", go_home())
+
 def t_disk_final():
     mark("13 disk final")
     exp = sorted([
@@ -2883,6 +3020,7 @@ def main():
     t_breadcrumbs()
     t_viewer()
     t_drag_drop()
+    t_share_target()
     t_disk_final()
     stop_dump_server()
     print(f"\n===== {passed} passed, {failed} failed, {len(soft_warnings)} warnings =====")

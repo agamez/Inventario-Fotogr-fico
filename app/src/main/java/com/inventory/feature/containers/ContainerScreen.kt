@@ -133,6 +133,7 @@ import com.inventory.feature.containers.drag.DragController
 import com.inventory.feature.containers.drag.DragKind
 import com.inventory.feature.containers.drag.DragPayload
 import com.inventory.nav.breadcrumbSegments
+import com.inventory.share.ShareReceiver
 import com.inventory.storage.StorageMode
 import com.inventory.ui.rememberBackendModel
 import com.inventory.ui.rememberPreviewBitmap
@@ -239,9 +240,12 @@ fun ContainerScreen(
     val aiEnabled by viewModel.aiEnabled.collectAsStateWithLifecycle()
     val photoMoveTargets by viewModel.photoMoveTargets.collectAsStateWithLifecycle()
     val movableTargets by viewModel.movableTargets.collectAsStateWithLifecycle()
+    val pendingShare by ShareReceiver.pending.collectAsStateWithLifecycle()
+    val importedNotice by ShareReceiver.importedNotice.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val hapticFeedback = LocalHapticFeedback.current
+    val shareScope = rememberCoroutineScope()
 
     // Drop-target ownership is per screen: the folder this screen addresses.
     val folderRel = viewModel.folderRel
@@ -262,6 +266,7 @@ fun ContainerScreen(
     var photoToEdit by remember { mutableStateOf<CacheEntry?>(null) }
     var showCoverSheet by remember { mutableStateOf(false) }
     var coverTargetRel by remember { mutableStateOf<String?>(null) }
+    var sharePickerVisible by remember { mutableStateOf(false) }
     var upChipBounds by remember { mutableStateOf<Rect?>(null) }
     var gridBounds by remember { mutableStateOf<Rect?>(null) }
 
@@ -459,6 +464,29 @@ fun ContainerScreen(
     // own menu): ascend instead of staring at an empty title.
     LaunchedEffect(uiState.folderMissing) {
         if (uiState.folderMissing) onBack()
+    }
+
+    // Inbound Android share: the ROOT browse screen owns the destination
+    // picker. An empty payload (no readable image) reports "No images
+    // shared"; a non-empty one opens the "Add to Photo Inventory" sheet.
+    LaunchedEffect(pendingShare, isRoot) {
+        val images = pendingShare ?: return@LaunchedEffect
+        if (!isRoot) return@LaunchedEffect
+        if (images.isEmpty()) {
+            snackbarHostState.showSnackbar(context.getString(R.string.share_no_images))
+            ShareReceiver.clear()
+        } else {
+            sharePickerVisible = true
+        }
+    }
+
+    // Confirmation of a completed share import: shown by the container
+    // screen the import navigated to (the root screen ignores it).
+    LaunchedEffect(importedNotice, isRoot) {
+        val label = importedNotice ?: return@LaunchedEffect
+        if (isRoot) return@LaunchedEffect
+        snackbarHostState.showSnackbar(context.getString(R.string.share_imported, label))
+        ShareReceiver.consumeImportedNotice()
     }
 
     // Root destination behind the storage gate: nothing else is reachable
@@ -908,6 +936,36 @@ fun ContainerScreen(
             onPathSelected = { choice ->
                 viewModel.moveSelected(choice.relPath)
                 showPhotoMoveSheet = false
+            },
+        )
+    }
+
+    if (sharePickerVisible) {
+        ShareTargetSheet(
+            paths = photoMoveTargets,
+            onDismiss = {
+                sharePickerVisible = false
+                ShareReceiver.clear()
+            },
+            onPathSelected = { choice ->
+                val images = ShareReceiver.pending.value.orEmpty()
+                sharePickerVisible = false
+                if (images.isEmpty()) {
+                    ShareReceiver.clear()
+                } else {
+                    shareScope.launch {
+                        val imported = viewModel.importSharedPhotos(choice.relPath, images)
+                        ShareReceiver.clear()
+                        if (imported) {
+                            ShareReceiver.notifyImported(choice.label)
+                            onOpenContainer(choice.relPath)
+                        } else {
+                            snackbarHostState.showSnackbar(
+                                context.getString(R.string.share_import_failed),
+                            )
+                        }
+                    }
+                }
             },
         )
     }
@@ -1888,6 +1946,88 @@ private fun ContainerPathPickerSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp, vertical = 8.dp),
+        )
+        if (paths.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = stringResource(R.string.no_other_containers),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+            }
+        } else {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(1),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 360.dp),
+            ) {
+                items(
+                    items = paths,
+                    key = { choice -> choice.relPath },
+                ) { choice ->
+                    ListItem(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPathSelected(choice) },
+                        headlineContent = {
+                            Text(
+                                text = choice.label,
+                                style = MaterialTheme.typography.bodyLarge,
+                            )
+                        },
+                        leadingContent = {
+                            Icon(
+                                imageVector = Icons.Outlined.Folder,
+                                contentDescription = null,
+                            )
+                        },
+                    )
+                    HorizontalDivider()
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+    }
+}
+
+/**
+ * The Android share target's destination picker: every indexed container
+ * ([paths]) as a tappable row, shown by the root browse screen while a
+ * shared image waits for a home. A dedicated sheet (rather than the
+ * move-picker) so its wording — "Add to Photo Inventory" / "Pick a
+ * container" — matches the inbound-share flow.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ShareTargetSheet(
+    paths: List<ContainerViewModel.FolderChoice>,
+    onDismiss: () -> Unit,
+    onPathSelected: (ContainerViewModel.FolderChoice) -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState()
+
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Text(
+            text = stringResource(R.string.share_target_title),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 4.dp),
+        )
+        Text(
+            text = stringResource(R.string.pick_container),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp, vertical = 4.dp),
         )
         if (paths.isEmpty()) {
             Box(
