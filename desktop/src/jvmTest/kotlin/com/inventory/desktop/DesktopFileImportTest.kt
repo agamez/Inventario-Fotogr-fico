@@ -10,6 +10,7 @@ import javax.imageio.ImageIO
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.test.runTest
 
@@ -18,8 +19,9 @@ import kotlinx.coroutines.test.runTest
  * Android share target): [ImageIoImageTranscoder] passes JPEGs through
  * byte-identically and transcodes other formats to JPEG, and
  * [DesktopAppController.importFile] names the stored photo after the source
- * file minus its extension, honours collision suffixes and refuses
- * non-images.
+ * file minus its extension, refuses non-images and — unless `--force` —
+ * skips a file whose pixels are already in the container (with `--force`,
+ * the collision suffix appears).
  */
 class DesktopFileImportTest {
 
@@ -53,7 +55,7 @@ class DesktopFileImportTest {
     }
 
     @Test
-    fun importFileStoresPngAsJpegNamedAfterTheFileAndSuffixesCollisions() = runTest {
+    fun importFileSkipsAnIdenticalDuplicateAndForceImportsIt() = runTest {
         val (app, root) = controller()
         app.refreshNow()
         app.createFolder("", "Box")
@@ -75,9 +77,19 @@ class DesktopFileImportTest {
         assertEquals("snapshot", DesktopExifEditor().read(stored)?.description)
         assertTrue(app.snapshot.value.allPhotos.any { it.relPath == firstPath })
 
-        val second = app.importFile("Box", png)
-        assertTrue(second is DesktopAppController.FileImportResult.Imported, "got $second")
-        assertEquals("Box/snapshot (2).jpg", second.relPath)
+        // The same pixels are refused without --force, naming the existing photo.
+        val duplicate = app.importFile("Box", png)
+        assertTrue(
+            duplicate is DesktopAppController.FileImportResult.SkippedDuplicate,
+            "got $duplicate",
+        )
+        assertEquals("snapshot", duplicate.description)
+        assertFalse(File(root, "Box/snapshot (2).jpg").exists())
+
+        // --force bypasses the check and lands under a collision-safe name.
+        val forced = app.importFile("Box", png, force = true)
+        assertTrue(forced is DesktopAppController.FileImportResult.Imported, "got $forced")
+        assertEquals("Box/snapshot (2).jpg", forced.relPath)
     }
 
     @Test

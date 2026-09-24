@@ -176,4 +176,11 @@
     <string name="share_imported">Imported to %1$s</string>
     <string name="share_import_failed">Import failed</string>
     <string name="share_no_images">No images shared</string>
+
+    <!-- Duplicate detection on import (gallery picks + share target) -->
+    <string name="duplicate_title">Duplicate photo</string>
+    <string name="duplicate_message">Identical photo already exists here as \'%1$s\'.</string>
+    <string name="duplicate_import_anyway">Import anyway</string>
+    <string name="duplicate_skip">Skip</string>
+    <string name="share_imported_skipped">%1$d imported, %2$d skipped as duplicates</string>
 </resources>

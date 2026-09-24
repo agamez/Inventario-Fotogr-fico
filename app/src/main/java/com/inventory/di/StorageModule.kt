@@ -3,10 +3,13 @@ package com.inventory.di
 import android.content.Context
 import android.os.Environment
 import com.inventory.storage.AndroidExifEditor
+import com.inventory.storage.AndroidImageHasher
 import com.inventory.storage.AndroidImageTranscoder
 import com.inventory.storage.BackendEntry
+import com.inventory.storage.DuplicateGuard
 import com.inventory.storage.ExifEditor
 import com.inventory.storage.FileBackend
+import com.inventory.storage.ImageHasher
 import com.inventory.storage.ImageTranscoder
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.PhotoMeta
@@ -49,6 +52,28 @@ object StorageModule {
     @Provides
     @Singleton
     fun provideImageTranscoder(): ImageTranscoder = AndroidImageTranscoder()
+
+    /** The platform dHash decoder behind duplicate detection on import. */
+    @Provides
+    @Singleton
+    fun provideImageHasher(): ImageHasher = AndroidImageHasher()
+
+    /**
+     * Duplicate detection follows the active storage mode like the trash
+     * manager and report generator: it is built on a [ModeRoutingBackend]
+     * so the read-only scan always targets whichever door is active.
+     */
+    @Provides
+    @Singleton
+    fun provideDuplicateGuard(
+        fileBackend: FileBackend,
+        safBackend: SafBackend,
+        prefs: StorageModePrefs,
+        hasher: ImageHasher,
+    ): DuplicateGuard = DuplicateGuard(
+        backend = ModeRoutingBackend(fileBackend, safBackend, prefs),
+        hasher = hasher,
+    )
 
     @Provides
     @Singleton

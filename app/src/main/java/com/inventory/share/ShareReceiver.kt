@@ -36,14 +36,26 @@ object ShareReceiver {
      */
     val pending: StateFlow<List<SharedImage>?> = _pending.asStateFlow()
 
-    private val _importedNotice = MutableStateFlow<String?>(null)
+    /**
+     * Confirmation of a completed share import: the container label plus
+     * the landed/skipped counts, so the destination screen can either say
+     * "Imported to <label>" or, when duplicates were skipped, the
+     * "n imported, m skipped as duplicates" summary.
+     */
+    data class ImportedNotice(
+        val containerLabel: String,
+        val imported: Int,
+        val skipped: Int,
+    )
+
+    private val _importedNotice = MutableStateFlow<ImportedNotice?>(null)
 
     /**
-     * Container label to confirm an import with, observed by the
-     * destination browse screen. Set just before navigating there so the
-     * snackbar appears on the container the photos landed in.
+     * Confirmation of an import, observed by the destination browse
+     * screen. Set just before navigating there so the snackbar appears on
+     * the container the photos landed in (or were all skipped from).
      */
-    val importedNotice: StateFlow<String?> = _importedNotice.asStateFlow()
+    val importedNotice: StateFlow<ImportedNotice?> = _importedNotice.asStateFlow()
 
     /** Parks the images read from an inbound share (an empty list is meaningful). */
     fun offer(images: List<SharedImage>) {
@@ -55,9 +67,9 @@ object ShareReceiver {
         _pending.value = null
     }
 
-    /** Arms the "Imported to <label>" confirmation for the next browse screen. */
-    fun notifyImported(containerLabel: String) {
-        _importedNotice.value = containerLabel
+    /** Arms the import confirmation for the next browse screen. */
+    fun notifyImported(containerLabel: String, imported: Int, skipped: Int) {
+        _importedNotice.value = ImportedNotice(containerLabel, imported, skipped)
     }
 
     /** Consumes the confirmation once it has been shown. */

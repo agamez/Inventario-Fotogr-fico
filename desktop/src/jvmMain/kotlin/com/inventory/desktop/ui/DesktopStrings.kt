@@ -82,6 +82,12 @@ object DesktopStrings {
     const val N_MORE_WAITING = "%d more waiting"
     const val DESCRIPTION_REQUIRED = "Description is required"
 
+    // Duplicate detection on import (mirrors Android's duplicate_* resources)
+    const val DUPLICATE_TITLE = "Duplicate photo"
+    const val DUPLICATE_MESSAGE = "Identical photo already exists here as '%1\$s'."
+    const val DUPLICATE_IMPORT_ANYWAY = "Import anyway"
+    const val DUPLICATE_SKIP = "Skip"
+
     // Settings dialog (AI auto-label) — wording mirrors Android's ai_* resources
     const val SETTINGS_TITLE = "Settings"
     const val AI_ENABLE = "AI auto-label"

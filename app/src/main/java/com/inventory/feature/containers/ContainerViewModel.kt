@@ -17,6 +17,7 @@ import com.inventory.cache.ChildCounts
 import com.inventory.cache.InventoryScanner
 import com.inventory.settings.TrashPrefs
 import com.inventory.share.SharedImage
+import com.inventory.storage.DuplicateGuard
 import com.inventory.storage.Filenames
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.InventoryStore
@@ -77,6 +78,7 @@ class ContainerViewModel @Inject constructor(
     private val trashPrefs: TrashPrefs,
     private val trashManager: TrashManager,
     private val reportGenerator: InventoryReportGenerator,
+    private val duplicateGuard: DuplicateGuard,
 ) : ViewModel() {
 
     /**
@@ -266,8 +268,17 @@ class ContainerViewModel @Inject constructor(
      * by the id so a reply that lands after the queue moved on is simply
      * ignored. Cancelling drops the whole queue (bytes live in memory only
      * — nothing to clean up on disk).
+     *
+     * [duplicateOf] is the description of an identical-looking photo already
+     * in the target container (set when the first Save detects it): while it
+     * is non-null the sheet shows the duplicate warning with
+     * [duplicate_import_anyway]/[duplicate_skip] instead of the plain save.
      */
-    data class PendingPhoto(val id: Long, val bytes: ByteArray)
+    data class PendingPhoto(
+        val id: Long,
+        val bytes: ByteArray,
+        val duplicateOf: String? = null,
+    )
 
     private val pendingIdCounter = AtomicLong(0)
 
@@ -700,9 +711,20 @@ class ContainerViewModel @Inject constructor(
 
     /**
      * Saves the queue head into the folder on screen with its (required)
-     * description. Success pops the head (the bytes were written as a
-     * permanent JPEG) and rescans; an undecodable head is dropped with an
-     * error so a broken image cannot stall the queue.
+     * description. On the FIRST attempt the head is checked against the
+     * folder's existing photos ([DuplicateGuard]): a hit does not import
+     * yet — it marks the head with the existing description, which makes
+     * the sheet show the duplicate warning with "Import anyway"/"Skip".
+     * Pressing "Import anyway" calls this again and skips the check.
+     *
+     * Success pops the head (the bytes were written as a permanent JPEG)
+     * and rescans; an undecodable head is dropped with an error so a
+     * broken image cannot stall the queue.
+     *
+     * This is the GALLERY-pick path only. Camera captures are unique
+     * pixels by nature and go straight through
+     * [com.inventory.feature.photos.CameraViewModel], which deliberately
+     * performs no duplicate check.
      */
     fun savePendingPhoto(rawDescription: String, rawNote: String?) {
         val head = _pendingQueue.value.firstOrNull() ?: return
@@ -712,6 +734,17 @@ class ContainerViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
+            if (head.duplicateOf == null) {
+                val hit = duplicateGuard.findDuplicate(folderRel, head.bytes)
+                if (hit != null) {
+                    _pendingQueue.update { queue ->
+                        queue.map { item ->
+                            if (item.id == head.id) item.copy(duplicateOf = hit.description) else item
+                        }
+                    }
+                    return@launch
+                }
+            }
             when (
                 store.addPhoto(
                     folderRel = folderRel,
@@ -736,24 +769,43 @@ class ContainerViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Drops the queue head the user chose to Skip at the duplicate warning
+     * and lets the rest of the queue continue (the sheet re-keys onto the
+     * next staged photo, if any).
+     */
+    fun skipPendingDuplicate() {
+        val head = _pendingQueue.value.firstOrNull() ?: return
+        _pendingQueue.update { queue -> queue.drop(1) }
+        _aiSuggestions.update { it - head.id }
+    }
+
     fun discardPendingPhotos() {
         _pendingQueue.value = emptyList()
         _aiSuggestions.value = emptyMap()
     }
+
+    /** Outcome counts of a share-target import: landed vs skipped as duplicates. */
+    data class ShareImportResult(val imported: Int, val skipped: Int)
 
     /**
      * Stores images handed in through the Android share target into
      * [folderRel]: each is already a JPEG ([com.inventory.storage.ImageTranscoder]
      * ran in the activity), its description is the shared file's EXIF
      * ImageDescription when present, else the display name minus its
-     * extension. Returns true when at least one photo landed; false when
-     * every entry was refused (blank description, undecodable) or the
-     * destination vanished. The caller confirms/navigates.
+     * extension. A file identical to one already in the folder is skipped
+     * silently and counted (the share path has no interactive prompt), per
+     * [DuplicateGuard]. The caller confirms/navigates with both counts.
      */
-    suspend fun importSharedPhotos(folderRel: String, images: List<SharedImage>): Boolean {
-        if (images.isEmpty()) return false
+    suspend fun importSharedPhotos(folderRel: String, images: List<SharedImage>): ShareImportResult {
+        if (images.isEmpty()) return ShareImportResult(imported = 0, skipped = 0)
         var imported = 0
+        var skipped = 0
         for (image in images) {
+            if (duplicateGuard.findDuplicate(folderRel, image.bytes) != null) {
+                skipped++
+                continue
+            }
             val description = image.exifDescription?.trim()?.ifEmpty { null }
                 ?: image.displayName.substringBeforeLast('.', image.displayName)
             val outcome = store.addPhoto(
@@ -766,7 +818,7 @@ class ContainerViewModel @Inject constructor(
             if (outcome == InventoryStore.AddOutcome.Success) imported++
         }
         scanner.rescan()
-        return imported > 0
+        return ShareImportResult(imported = imported, skipped = skipped)
     }
 
     fun deletePhoto(relPath: String) {

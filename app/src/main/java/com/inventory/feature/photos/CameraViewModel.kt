@@ -108,6 +108,10 @@ class CameraViewModel @Inject constructor(
      * shows the snackbar when it returns) and the screen is asked to
      * navigate back. A rejected frame is dropped and reported so the user
      * can retake it.
+     *
+     * Camera captures deliberately bypass the gallery/share duplicate
+     * check ([com.inventory.storage.DuplicateGuard]): a fresh frame is
+     * unique pixels by nature, so asking "import anyway?" would be noise.
      */
     fun save(rawDescription: String, rawNote: String?) {
         val staged = _pending.value ?: return

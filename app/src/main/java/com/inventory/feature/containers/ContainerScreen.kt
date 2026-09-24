@@ -482,11 +482,18 @@ fun ContainerScreen(
     }
 
     // Confirmation of a completed share import: shown by the container
-    // screen the import navigated to (the root screen ignores it).
+    // screen the import navigated to (the root screen ignores it). When the
+    // share carried duplicates that were skipped, the summary line names
+    // both counts instead of the plain "Imported to <label>".
     LaunchedEffect(importedNotice, isRoot) {
-        val label = importedNotice ?: return@LaunchedEffect
+        val notice = importedNotice ?: return@LaunchedEffect
         if (isRoot) return@LaunchedEffect
-        snackbarHostState.showSnackbar(context.getString(R.string.share_imported, label))
+        val text = if (notice.skipped > 0) {
+            context.getString(R.string.share_imported_skipped, notice.imported, notice.skipped)
+        } else {
+            context.getString(R.string.share_imported, notice.containerLabel)
+        }
+        snackbarHostState.showSnackbar(text)
         ShareReceiver.consumeImportedNotice()
     }
 
@@ -956,10 +963,14 @@ fun ContainerScreen(
                     ShareReceiver.clear()
                 } else {
                     shareScope.launch {
-                        val imported = viewModel.importSharedPhotos(choice.relPath, images)
+                        val result = viewModel.importSharedPhotos(choice.relPath, images)
                         ShareReceiver.clear()
-                        if (imported) {
-                            ShareReceiver.notifyImported(choice.label)
+                        if (result.imported > 0 || result.skipped > 0) {
+                            ShareReceiver.notifyImported(
+                                choice.label,
+                                result.imported,
+                                result.skipped,
+                            )
                             onOpenContainer(choice.relPath)
                         } else {
                             snackbarHostState.showSnackbar(
@@ -1107,9 +1118,11 @@ fun ContainerScreen(
                 remainingCount = pendingQueue.size - 1,
                 aiEnabled = aiEnabled,
                 suggestion = aiSuggestions[head.id],
+                duplicateOf = head.duplicateOf,
                 onSave = { description, note ->
                     viewModel.savePendingPhoto(description, note)
                 },
+                onSkipDuplicate = viewModel::skipPendingDuplicate,
                 onCancel = viewModel::discardPendingPhotos,
             )
         }
@@ -2459,7 +2472,9 @@ private fun PendingPhotoSaveSheet(
     remainingCount: Int,
     aiEnabled: Boolean,
     suggestion: VisionOutcome?,
+    duplicateOf: String?,
     onSave: (String, String?) -> Unit,
+    onSkipDuplicate: () -> Unit,
     onCancel: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -2483,6 +2498,20 @@ private fun PendingPhotoSaveSheet(
                 .fillMaxWidth()
                 .padding(horizontal = 24.dp),
         ) {
+            if (duplicateOf != null) {
+                Text(
+                    text = stringResource(R.string.duplicate_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(bottom = 4.dp),
+                )
+                Text(
+                    text = stringResource(R.string.duplicate_message, duplicateOf),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
             if (remainingCount > 0) {
                 Text(
                     text = stringResource(R.string.photos_pending_count, remainingCount),
@@ -2525,15 +2554,28 @@ private fun PendingPhotoSaveSheet(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = onCancel) {
-                    Text(stringResource(R.string.cancel))
-                }
-                Spacer(modifier = Modifier.size(8.dp))
-                Button(
-                    onClick = { onSave(description, note.ifBlank { null }) },
-                    enabled = description.isNotBlank(),
-                ) {
-                    Text(stringResource(R.string.save_photo))
+                if (duplicateOf != null) {
+                    TextButton(onClick = onSkipDuplicate) {
+                        Text(stringResource(R.string.duplicate_skip))
+                    }
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Button(
+                        onClick = { onSave(description, note.ifBlank { null }) },
+                        enabled = description.isNotBlank(),
+                    ) {
+                        Text(stringResource(R.string.duplicate_import_anyway))
+                    }
+                } else {
+                    TextButton(onClick = onCancel) {
+                        Text(stringResource(R.string.cancel))
+                    }
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Button(
+                        onClick = { onSave(description, note.ifBlank { null }) },
+                        enabled = description.isNotBlank(),
+                    ) {
+                        Text(stringResource(R.string.save_photo))
+                    }
                 }
             }
         }

@@ -284,7 +284,9 @@ fun ImportQueueDialog(
     remaining: Int,
     aiEnabled: Boolean,
     suggestion: VisionOutcome?,
+    duplicateOf: String?,
     onSave: (String, String?) -> Unit,
+    onSkipDuplicate: () -> Unit,
     onCancel: () -> Unit,
 ) {
     var description by remember(photo.id) { mutableStateOf("") }
@@ -320,6 +322,19 @@ fun ImportQueueDialog(
                         color = MaterialTheme.colorScheme.primary,
                     )
                 }
+                if (duplicateOf != null) {
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        DesktopStrings.DUPLICATE_TITLE,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    Text(
+                        DesktopStrings.DUPLICATE_MESSAGE.format(duplicateOf),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = description,
@@ -343,13 +358,24 @@ fun ImportQueueDialog(
             }
         },
         confirmButton = {
-            Button(
-                enabled = description.isNotBlank(),
-                onClick = { onSave(description, note) },
-            ) { Text(if (remaining > 0) DesktopStrings.NEXT else DesktopStrings.SAVE) }
+            if (duplicateOf != null) {
+                Button(
+                    enabled = description.isNotBlank(),
+                    onClick = { onSave(description, note) },
+                ) { Text(DesktopStrings.DUPLICATE_IMPORT_ANYWAY) }
+            } else {
+                Button(
+                    enabled = description.isNotBlank(),
+                    onClick = { onSave(description, note) },
+                ) { Text(if (remaining > 0) DesktopStrings.NEXT else DesktopStrings.SAVE) }
+            }
         },
         dismissButton = {
-            TextButton(onClick = onCancel) { Text(DesktopStrings.CANCEL) }
+            if (duplicateOf != null) {
+                TextButton(onClick = onSkipDuplicate) { Text(DesktopStrings.DUPLICATE_SKIP) }
+            } else {
+                TextButton(onClick = onCancel) { Text(DesktopStrings.CANCEL) }
+            }
         },
     )
 }

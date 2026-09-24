@@ -90,12 +90,14 @@ class DesktopAiLabelTest {
             )
 
             // The pre-fill guard fills the still-blank dialog fields; saving
-            // consumes the queue head exactly once.
+            // consumes the queue head exactly once. Both staged photos are the
+            // same synthetic JPEG, so force past the duplicate guard (the
+            // duplicate path has its own coverage in DesktopFileImportTest).
             val fills = queue.map { photo -> mergedPreFill("", "", outcomes.getValue(photo.id)) }
             fills.forEach { fill ->
                 assertEquals(
                     DesktopAppController.Outcome.Saved,
-                    app.importPendingPhoto("Box", fill.description, fill.note),
+                    app.importPendingPhoto("Box", fill.description, fill.note, force = true),
                 )
             }
         }

@@ -52,9 +52,10 @@ private val windowIconPainter: Painter? by lazy {
  * the verification path that needs no display. With
  * `--ai-test <baseUrl> <apiKey> <model> [imagePath] [language]` it
  * exercises the shared AI client against a live OpenAI-compatible server
- * and exits 0/1. With `--import <containerRelPath> <file1> [file2 …]` it
- * imports the files into that container of the saved inventory root and
- * exits 0/1 — the desktop twin of the Android share target. Otherwise it
+ * and exits 0/1. With `--import <containerRelPath> <file1> [file2 …]
+ * [--force]` it imports the files into that container of the saved
+ * inventory root, skipping identical-looking duplicates unless `--force`,
+ * and exits 0/1 — the desktop twin of the Android share target. Otherwise it
  * opens the 1100x750 window: it loads the saved root from [DesktopConfig],
  * shows the folder gate when none is usable, and otherwise builds the
  * [DesktopAppController] (watcher + initial index rebuild) and hands it
@@ -119,25 +120,32 @@ fun main(args: Array<String>) {
 }
 
 /**
- * `--import <containerRelPath> <file1> [file2 …]` — the desktop's
- * platform-idiomatic inbound-import path, the CLI twin of the Android
- * share target. Reads the saved inventory root from [DesktopConfig], then
- * imports every file into the container at `<containerRelPath>` (a
- * `/`-joined path relative to the root; `""` is the root itself),
- * transcoding non-JPEG images to JPEG and naming each stored photo after
- * its file name minus the extension.
+ * `--import <containerRelPath> <file1> [file2 …] [--force]` — the
+ * desktop's platform-idiomatic inbound-import path, the CLI twin of the
+ * Android share target. Reads the saved inventory root from
+ * [DesktopConfig], then imports every file into the container at
+ * `<containerRelPath>` (a `/`-joined path relative to the root; `""` is
+ * the root itself), transcoding non-JPEG images to JPEG and naming each
+ * stored photo after its file name minus the extension.
+ *
+ * A file that looks identical to one already in the container is skipped
+ * and printed as `SKIP <file>: duplicate of '<desc>' (or --force to
+ * import anyway)`; `--force` bypasses that check and imports it.
  *
  * Prints `OK <file> -> <finalRelPath>` or `FAIL <file>: <reason>` per
- * file and returns 0 when every file imported, 1 otherwise (also for a
- * missing root config, a missing container or too few arguments).
+ * file and returns 0 when nothing failed, 1 otherwise (also for a missing
+ * root config, a missing container or too few arguments). A skip is not a
+ * failure.
  */
 private fun runImport(arguments: List<String>): Int {
-    if (arguments.size < 2) {
-        System.err.println("usage: --import <containerRelPath> <file1> [file2 ...]")
+    val force = arguments.contains(FORCE_FLAG)
+    val operands = arguments.filterNot { it == FORCE_FLAG }
+    if (operands.size < 2) {
+        System.err.println("usage: --import <containerRelPath> <file1> [file2 ...] [--force]")
         return 1
     }
-    val containerRel = arguments.first()
-    val files = arguments.drop(1).map(::File)
+    val containerRel = operands.first()
+    val files = operands.drop(1).map(::File)
     val root = DesktopConfig.default.loadRoot()
     if (root == null) {
         System.err.println("FAIL: no inventory folder configured — run the app and pick one first")
@@ -154,9 +162,14 @@ private fun runImport(arguments: List<String>): Int {
         runBlocking {
             controller.refreshNow()
             for (file in files) {
-                when (val result = controller.importFile(containerRel, file)) {
+                when (val result = controller.importFile(containerRel, file, force)) {
                     is DesktopAppController.FileImportResult.Imported ->
                         println("OK ${file.path} -> ${result.relPath}")
+                    is DesktopAppController.FileImportResult.SkippedDuplicate ->
+                        println(
+                            "SKIP ${file.path}: duplicate of '${result.description}' " +
+                                "(or --force to import anyway)",
+                        )
                     is DesktopAppController.FileImportResult.Failed -> {
                         allOk = false
                         println("FAIL ${file.path}: ${result.reason}")
@@ -169,6 +182,9 @@ private fun runImport(arguments: List<String>): Int {
     }
     return if (allOk) 0 else 1
 }
+
+/** CLI flag that bypasses duplicate detection on `--import`. */
+private const val FORCE_FLAG = "--force"
 
 /**
  * `--ai-test <baseUrl> <apiKey> <model> [imagePath] [language]` — validates

@@ -879,9 +879,15 @@ fun App(controller: DesktopAppController) {
                 remaining = pendingQueue.size - 1,
                 aiEnabled = aiSettings.enabled && aiSettings.model.isNotBlank(),
                 suggestion = aiSuggestions[head.id],
+                duplicateOf = head.duplicateOf,
                 onSave = { description, note ->
                     scope.launch {
-                        val outcome = controller.importPendingPhoto(folderRel, description, note)
+                        val outcome = controller.importPendingPhoto(
+                            folderRel,
+                            description,
+                            note,
+                            force = head.duplicateOf != null,
+                        )
                         message = when (outcome) {
                             DesktopAppController.Outcome.Saved ->
                                 if (controller.pendingQueue.value.isEmpty()) {
@@ -890,10 +896,13 @@ fun App(controller: DesktopAppController) {
                                     DesktopStrings.MSG_PHOTO_ADDED
                                 }
                             DesktopAppController.Outcome.BlankName -> DesktopStrings.MSG_ERROR_BLANK_DESCRIPTION
+                            // The warning is rendered inline by the dialog; no snackbar.
+                            DesktopAppController.Outcome.Duplicate -> message
                             else -> DesktopStrings.MSG_ERROR_INVALID_IMAGE
                         }
                     }
                 },
+                onSkipDuplicate = { controller.skipPendingImport() },
                 onCancel = {
                     controller.discardPendingImport()
                 },

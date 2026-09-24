@@ -1174,6 +1174,19 @@ def gallery_pick_one(where=""):
     tap(add)
     return wait_for(text="Description (required)", timeout=10) is not None
 
+def import_anyway_if_duplicate(timeout=20):
+    """After a gallery Save that may collide with an identical photo already
+    in the container: click "Import anyway" on the duplicate warning. Returns
+    True when the warning was handled, False when no warning appeared (the
+    save went straight through)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        d = dump()
+        if d is not None and find_all(d, text="Identical photo already exists here as"):
+            return tap_text("Import anyway", timeout=6)
+        time.sleep(0.3)
+    return False
+
 # ---- drag-and-drop motion helpers ------------------------------------------
 # API 35's `input motionevent DOWN|MOVE|UP x y` injects ONE MotionEvent per
 # call; the four drag gestures (photo/container/ancestor/selection) need a
@@ -1285,10 +1298,21 @@ def seed_photo(rel, desc, note=None, date="2026:01:01 12:00:00"):
     os.unlink(tmp.name)
 
 def make_png(width, height, color=(10, 200, 60)):
-    """A real PNG on a host buffer (the share-target PNG-transcode proof)."""
+    """A real PNG on a host buffer (the share-target PNG-transcode proof).
+
+    The fill is a bright→dark→bright V gradient rather than a flat color:
+    a flat fill hashes to dHash 0, which would read as "identical" to any
+    other flat image (the seeded 1x1 JPEG) and be skipped by the duplicate
+    guard instead of being transcoded."""
     from PIL import Image
+    img = Image.new("RGB", (width, height))
+    pixels = img.load()
+    for x in range(width):
+        shade = int(255 * abs(2 * x / max(1, width - 1) - 1))
+        for y in range(height):
+            pixels[x, y] = (shade, (color[1] + shade) % 256, color[2])
     buf = io.BytesIO()
-    Image.new("RGB", (width, height), color).save(buf, "PNG")
+    img.save(buf, "PNG")
     return buf.getvalue()
 
 def seed_media_image(name, data, mime):
@@ -1670,6 +1694,9 @@ def t_photos_and_flow():
     if not f2: return
     tap(f2[0]); wait_ime(); type_text("Old skis"); hide_ime(); time.sleep(0.8)
     tap_text("Save")
+    # Both seeded gallery picks are byte-identical, so the second one is
+    # flagged as a duplicate: import it anyway to preserve the flow's intent.
+    check("second pick flagged as duplicate", import_anyway_if_duplicate())
     check("gallery photos added snackbar", snackbar_visible("Photo added", timeout=10))
     check("tile Winter jacket", wait_for(text="Winter jacket", timeout=6) is not None)
     check("tile Old skis", wait_for(text="Old skis", timeout=6) is not None)
@@ -2183,6 +2210,9 @@ def t_ai_autolabel():
         check("blank-guard: empty note still pre-filled",
               len(vals2) >= 2 and vals2[1] == "added by mock server", str(vals2))
         check("save guarded photo", tap_text("Save photo", timeout=5))
+        # The picker hands back the same image as #1, so the save is flagged
+        # as a duplicate; import it anyway (the AI fields are the assertion).
+        check("guard photo flagged as duplicate", import_anyway_if_duplicate())
         manual = fp("Attic shelf", "Manual name.jpg")
         time.sleep(1.5)
         check("disk: Attic shelf/Manual name.jpg", fs_exists(manual))
@@ -2208,6 +2238,8 @@ def t_ai_autolabel():
             tap(fs[0]); wait_ime(); type_text("Plain item")
             ensure_ime_hidden(); time.sleep(0.8)
         check("save plain photo", tap_text("Save photo", timeout=5))
+        # Same image again (AI now off): duplicate warning, import anyway.
+        check("plain photo flagged as duplicate", import_anyway_if_duplicate())
         plain = fp("Attic shelf", "Plain item.jpg")
         time.sleep(1.5)
         check("disk: Attic shelf/Plain item.jpg", fs_exists(plain))
@@ -2890,6 +2922,50 @@ def t_share_target():
     check("disk: Share target removed", not fs_exists(fp("Share target")))
     check("home after share cleanup", go_home())
 
+def t_duplicate_import():
+    """Duplicate detection on gallery import (Tier-2 #8): importing the same
+    photo a second time into the same container raises the warning; Skip
+    leaves the disk untouched, Import anyway lands the "(2)" copy. The
+    dedicated container is removed again so the final disk audit is
+    unchanged."""
+    mark("12c duplicate")
+    check("starts on home", go_home())
+    sh(f"mkdir -p {sq(fp('Dup test'))}")
+    check("rescan adopts Dup test", rescan_from_root())
+    tap_text("Dup test"); time.sleep(1.8)
+    check("first gallery import saved", add_gallery_photo("Dup original", where="dup"))
+    time.sleep(1.5)
+    check("disk: first import present", fs_exists(fp("Dup test", "Dup original.jpg")))
+    before = sh(f"ls {sq(fp('Dup test'))} | wc -l").strip()
+
+    # second import of the same picker image -> duplicate warning -> Skip
+    check("second gallery pick opens the sheet", gallery_pick_one("dup skip"))
+    f = edit_texts()
+    if not f: return
+    tap(f[0]); wait_ime(); type_text("Dup original"); ensure_ime_hidden(); time.sleep(0.8)
+    check("duplicate warning shown", tap_text("Save photo", timeout=6)
+          and wait_for(text="Identical photo already exists here as", timeout=10) is not None)
+    check("Skip taps", tap_text("Skip", timeout=5))
+    time.sleep(1.5)
+    after = sh(f"ls {sq(fp('Dup test'))} | wc -l").strip()
+    check("file count unchanged after Skip", before == after, f"{before} -> {after}")
+
+    # third import: Import anyway lands the collision-suffixed copy
+    check("third gallery pick opens the sheet", gallery_pick_one("dup force"))
+    f = edit_texts()
+    if not f: return
+    tap(f[0]); wait_ime(); type_text("Dup original"); ensure_ime_hidden(); time.sleep(0.8)
+    check("duplicate warning shown again", tap_text("Save photo", timeout=6)
+          and wait_for(text="Identical photo already exists here as", timeout=10) is not None)
+    check("Import anyway taps", tap_text("Import anyway", timeout=5))
+    time.sleep(1.5)
+    check("duplicate imported as (2)", fs_exists(fp("Dup test", "Dup original (2).jpg")))
+
+    # cleanup: the dedicated container is removed (the audit stays exact).
+    sh(f"rm -rf {sq(fp('Dup test'))}")
+    check("disk: Dup test removed", not fs_exists(fp("Dup test")))
+    check("home after dup cleanup", go_home())
+
 def t_disk_final():
     mark("13 disk final")
     exp = sorted([
@@ -3021,6 +3097,7 @@ def main():
     t_viewer()
     t_drag_drop()
     t_share_target()
+    t_duplicate_import()
     t_disk_final()
     stop_dump_server()
     print(f"\n===== {passed} passed, {failed} failed, {len(soft_warnings)} warnings =====")

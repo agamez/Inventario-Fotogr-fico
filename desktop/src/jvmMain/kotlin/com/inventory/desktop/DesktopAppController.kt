@@ -11,9 +11,11 @@ import com.inventory.desktop.ui.DragKind
 import com.inventory.desktop.ui.DragPayload
 import com.inventory.storage.BackendEntry
 import com.inventory.storage.COVER_FILE_NAME
+import com.inventory.storage.DuplicateGuard
 import com.inventory.storage.ExifEditor
 import com.inventory.storage.Filenames
 import com.inventory.storage.FileBackend
+import com.inventory.storage.ImageHasher
 import com.inventory.storage.ImageTranscoder
 import com.inventory.storage.InventoryReportGenerator
 import com.inventory.storage.StorageBackend
@@ -62,10 +64,18 @@ class DesktopAppController(
     private val config: DesktopConfig = DesktopConfig.default,
     /** Non-JPEG images (PNG/WebP) are transcoded to JPEG before they are stored. */
     private val transcoder: ImageTranscoder = ImageIoImageTranscoder(),
+    /** Decodes image bytes into the dHash grid used by duplicate detection. */
+    private val hasher: ImageHasher = ImageIoImageHasher(),
 ) {
 
     val backend: StorageBackend = FileBackend(root = rootDir, accessCheck = { true }, exif = exifEditor)
     val index = DesktopIndex(backend)
+
+    /**
+     * Read-only duplicate detection shared by the UI import queue and the
+     * CLI `--import` path (see [DuplicateGuard] for the cost model).
+     */
+    private val duplicateGuard = DuplicateGuard(backend, hasher)
 
     /** Soft-delete/undo over the same file backend the controller uses. */
     val trashManager = TrashManager(backend)
@@ -111,8 +121,16 @@ class DesktopAppController(
      * head and pops it on success, and the optional AI suggestion is keyed
      * by the id so a reply that lands after the queue moved on is ignored.
      * Mirrors the Android ContainerViewModel's queue item.
+     *
+     * [duplicateOf] is the description of an identical-looking photo already
+     * in the target container, set by the first import attempt so the dialog
+     * can show the duplicate warning with its Import anyway / Skip actions.
      */
-    data class PendingPhoto(val id: Long, val bytes: ByteArray)
+    data class PendingPhoto(
+        val id: Long,
+        val bytes: ByteArray,
+        val duplicateOf: String? = null,
+    )
 
     private val pendingIdCounter = AtomicLong(0)
 
@@ -182,6 +200,9 @@ class DesktopAppController(
         data object BlankName : Outcome
         data object InvalidImage : Outcome
         data object InvalidMoveTarget : Outcome
+
+        /** The staged photo looks identical to one already in the target folder. */
+        data object Duplicate : Outcome
         data object Failed : Outcome
     }
 
@@ -419,17 +440,51 @@ class DesktopAppController(
     }
 
     /**
-     * Saves the queue head into [folderRel] with its description/note;
-     * the head is popped on success AND on invalid image (a broken file
-     * must not stall the queue), mirroring the Android VM.
+     * Saves the queue head into [folderRel] with its description/note; the
+     * head is popped on success AND on invalid image (a broken file must
+     * not stall the queue), mirroring the Android VM.
+     *
+     * The first attempt checks the head against the folder with
+     * [DuplicateGuard]: a hit marks the head with the existing description
+     * and returns [Outcome.Duplicate] instead of importing, so the dialog
+     * can show the warning. "Import anyway" re-invokes this with
+     * [force] = true, which bypasses the check (and matches the CLI
+     * `--force` flag).
      */
-    suspend fun importPendingPhoto(folderRel: String, rawDescription: String, rawNote: String?): Outcome {
+    suspend fun importPendingPhoto(
+        folderRel: String,
+        rawDescription: String,
+        rawNote: String?,
+        force: Boolean = false,
+    ): Outcome {
         val head = _pendingQueue.value.firstOrNull() ?: return Outcome.InvalidImage
+        if (rawDescription.trim().isEmpty()) return Outcome.BlankName
+        if (!force && head.duplicateOf == null) {
+            val hit = duplicateGuard.findDuplicate(folderRel, head.bytes)
+            if (hit != null) {
+                _pendingQueue.update { queue ->
+                    queue.map { item ->
+                        if (item.id == head.id) item.copy(duplicateOf = hit.description) else item
+                    }
+                }
+                return Outcome.Duplicate
+            }
+        }
         val outcome = importPhoto(folderRel, head.bytes, rawDescription, rawNote)
         if (outcome == Outcome.Saved || outcome == Outcome.InvalidImage) {
             _pendingQueue.value = _pendingQueue.value.drop(1)
         }
         return outcome
+    }
+
+    /**
+     * Drops the queue head the user chose to Skip at the duplicate warning
+     * and lets the queue continue with the next staged photo.
+     */
+    fun skipPendingImport() {
+        val head = _pendingQueue.value.firstOrNull() ?: return
+        _pendingQueue.value = _pendingQueue.value.drop(1)
+        _aiSuggestions.update { it - head.id }
     }
 
     /**
@@ -479,19 +534,29 @@ class DesktopAppController(
         target to Outcome.Saved
     }
 
-    /** One file's CLI import result: the stored relative path, or a reason. */
+    /** One file's CLI import result: the stored relative path, a skip, or a reason. */
     sealed interface FileImportResult {
         data class Imported(val relPath: String) : FileImportResult
+
+        /** An identical photo is already in the target; [description] names it. */
+        data class SkippedDuplicate(val description: String) : FileImportResult
         data class Failed(val reason: String) : FileImportResult
     }
 
     /**
      * Imports [file] into [folderRel] for the CLI `--import` mode: reads the
      * file, transcodes non-JPEG images to JPEG ([transcoder]) and stores it
-     * with description = the file name minus its extension. Returns the
-     * stored relative path, or a reason the file was refused.
+     * with description = the file name minus its extension. Unless [force]
+     * is set, a file that looks identical to one already in the container is
+     * reported as [FileImportResult.SkippedDuplicate] without importing
+     * (matching the UI import queue's duplicate warning). Returns the stored
+     * relative path, a skip, or a reason the file was refused.
      */
-    suspend fun importFile(folderRel: String, file: File): FileImportResult = withContext(Dispatchers.IO) {
+    suspend fun importFile(
+        folderRel: String,
+        file: File,
+        force: Boolean = false,
+    ): FileImportResult = withContext(Dispatchers.IO) {
         if (!file.isFile) return@withContext FileImportResult.Failed("no such file")
         val raw = runCatching { file.readBytes() }.getOrNull()
             ?: return@withContext FileImportResult.Failed("cannot read file")
@@ -500,6 +565,10 @@ class DesktopAppController(
         }
         val description = file.name.substringBeforeLast('.', file.name).trim()
         if (description.isEmpty()) return@withContext FileImportResult.Failed("blank file name")
+        if (!force) {
+            val hit = duplicateGuard.findDuplicate(folderRel, jpeg)
+            if (hit != null) return@withContext FileImportResult.SkippedDuplicate(hit.description)
+        }
         val (relPath, outcome) = importPhotoReturningPath(folderRel, jpeg, description, null)
         if (outcome == Outcome.Saved && relPath != null) {
             FileImportResult.Imported(relPath)
