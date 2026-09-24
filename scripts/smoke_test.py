@@ -75,6 +75,19 @@ AI_TEST_OK = "Connection OK"                            # ai_test_ok
 AI_THINKING = "Asking AI\u2026"                         # ai_suggestion_thinking
 AI_READY = "AI suggestion ready"                        # ai_suggestion_ready
 AI_FAILED = "AI suggestion failed"                      # ai_suggestion_failed
+# Trash (soft delete), report export, breadcrumbs and the full-screen photo
+# viewer — the four features added after the 468-check baseline (strings.xml).
+TRASH_ENABLE_LABEL = "Move deleted items to trash"      # trash_enable
+TRASH_WAS_IN = "Was in "                                # trash_was_in prefix
+TRASH_EMPTY = "Trash is empty"                          # trash_empty
+RESTORE_LABEL = "Restore"                               # restore
+DELETE_FOREVER_LABEL = "Delete forever"                 # delete_forever
+EXPORT_REPORT_LABEL = "Export report"                   # export_report
+REPORT_WRITTEN = "Report written to"                    # report_written prefix
+REPORT_HTML = "inventory-report.html"                   # InventoryReportGenerator
+REPORT_CSV = "inventory-report.csv"
+# The viewer's top-strip indicator: viewer_page = "%1$d / %2$d".
+VIEWER_PAGE_RE = re.compile(r"^(\d+) / (\d+)$")
 MOCK_PORT = 8765
 MOCK_PATH = "/tmp/mock_openai.py"
 MOCK_LOG = "/tmp/mock_openai.log"
@@ -636,6 +649,93 @@ def no_filename_leaks(name):
            if n.get("text", "").lower().endswith(".jpg")] if d is not None else ["<no dump>"]
     check(name, not bad, str(bad))
 
+# ---- full-screen photo viewer helpers (Feature 3) --------------------------
+# Tapping a tile opens the full-screen viewer, NOT the metadata editor: every
+# old "tap tile -> Description (required)" step now goes tile -> viewer ->
+# "Edit" -> editor -> Save (back in the viewer) -> "Close" -> grid. The top
+# strip's "N / M" indicator is the viewer's fingerprint, so `viewer_page()`
+# is both the open/closed test and the paging assertion. The EditText-based
+# editor is unchanged.
+
+def viewer_page():
+    """(page, total) from the viewer's indicator, or None when it is closed."""
+    d = dump()
+    if d is None: return None
+    for n in d.iter():
+        m = VIEWER_PAGE_RE.match(n.get("text", ""))
+        if m: return int(m.group(1)), int(m.group(2))
+    return None
+
+def viewer_open():
+    return viewer_page() is not None
+
+def close_viewer():
+    """Tap the viewer's Close icon when it is up; True once it is gone."""
+    if not viewer_open(): return False
+    tap_desc("Close", timeout=5)
+    time.sleep(1.0)
+    return not viewer_open()
+
+def open_viewer_and_edit(tile_locator):
+    """Tile -> viewer -> Edit -> editor. Returns the editor's EditText list
+    (description, note) or None if the viewer/editor did not appear."""
+    if tile_locator is None: return None
+    tap(tile_locator); time.sleep(1.5)
+    if not viewer_open(): return None
+    if not tap_text("Edit", timeout=6): return None
+    if wait_for(text="Description (required)", timeout=6) is None: return None
+    return edit_texts()
+
+# ---- trash / settings helpers (Feature 1) ----------------------------------
+
+def settings_switch(label):
+    """The M3 Switch sharing the row of the settings label with exact `label`
+    text (the screen has two: AI auto-label and Move deleted items to trash)."""
+    d = dump()
+    if d is None: return None
+    labels = [n for n in find_all(d, text=label) if n.get("text") == label]
+    if not labels: return None
+    lb = _bounds(labels[0].get("bounds", ""))
+    if not lb: return None
+    best, best_area = None, 1 << 62
+    for n in d.iter():
+        if n.get("checkable") != "true": continue
+        b = _bounds(n.get("bounds", ""))
+        if not b: continue
+        if b[1] < lb[3] and b[3] > lb[1]:  # same vertical band as the label
+            area = (b[2]-b[0]) * (b[3]-b[1])
+            if area < best_area:
+                best, best_area = n, area
+    return best
+
+def set_settings_switch(label, want):
+    """Flip the named settings switch to `want`; True when it reads back."""
+    n = settings_switch(label)
+    if n is None: return False
+    if (n.get("checked") == "true") != want:
+        tap(n); time.sleep(1.0)
+    n2 = settings_switch(label)
+    return n2 is not None and (n2.get("checked") == "true") == want
+
+def trash_stamps():
+    """Every stamp folder directly under <root>/.trash (sorted paths)."""
+    out = sh(f"find {sq(fp('.trash'))} -mindepth 1 -maxdepth 1 -type d 2>/dev/null")
+    return sorted(l.strip() for l in out.splitlines() if l.strip())
+
+def trash_enabled_pref():
+    """The trash_prefs.xml payload (run-as), for the persisted-flag checks."""
+    return sh(f"run-as {PKG} cat shared_prefs/trash_prefs.xml 2>/dev/null")
+
+def add_gallery_photo(description, where=""):
+    """FAB -> Choose from gallery -> pick one -> type the required
+    description -> Save photo. True when the save tap was reached."""
+    if not gallery_pick_one(where): return False
+    f = edit_texts()
+    if not f: return False
+    tap(f[0]); wait_ime(); type_text(description)
+    ensure_ime_hidden(); time.sleep(0.8)
+    return tap_text("Save photo", timeout=6)
+
 # ---- dual-mode storage helpers (chooser, mode dialog, SAF picker) ----------
 # Measured on this image: the "All files access" button (chooser AND mode
 # dialog) always hops to the All-Files-Access SETTINGS page, even with the
@@ -1137,6 +1237,28 @@ def drag_seed_jpeg(desc, note, rel):
     adb("push", tmp.name, fp(rel), timeout=30)
     os.unlink(tmp.name)
 
+def seed_photo(rel, desc, note=None, date="2026:01:01 12:00:00"):
+    """Push a JPEG with exact EXIF description/note/date to a disk path (the
+    parent folder must exist). The report and viewer scenarios use this for
+    deterministic metadata; the app adopts it on the next Rescan."""
+    import tempfile
+    from PIL import Image
+    tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+    tmp.close()
+    im = Image.new("RGB", (8, 8), (120, 40, 200))
+    ex = Image.Exif()
+    ex[0x010E] = desc
+    # DateTimeOriginal (0x9003) and UserComment (0x9286) live in the Exif
+    # sub-IFD (0x8769); assigning them on the top-level Exif object makes
+    # Pillow emit them into IFD0, which the app's ExifInterface never reads.
+    sub = {0x9003: date}
+    if note:
+        sub[0x9286] = ("ASCII\x00\x00\x00" + note).encode("latin-1")
+    ex[0x8769] = sub
+    im.save(tmp.name, "JPEG", exif=ex)
+    adb("push", tmp.name, fp(rel), timeout=30)
+    os.unlink(tmp.name)
+
 # ---------------------------------------------------------------- scenarios
 
 def t_saf_mode():
@@ -1630,8 +1752,17 @@ def t_preview_and_multiselect():
     tile = wait_for(text="Winter jacket")
     check("Winter jacket tile present", tile is not None)
     if tile is None: return
-    tap(tile); time.sleep(1.2)
-    check("preview dialog opens", wait_for(text="Description (required)", timeout=6) is not None)
+    # Viewer flow (Feature 3): the tile tap opens the full-screen viewer, not
+    # the editor; "Edit" then opens the existing metadata dialog. After Save
+    # we are back in the viewer, whose overlay shows the new description, and
+    # "Close" returns to the grid.
+    tap(tile); time.sleep(1.5)
+    check("viewer opens on the tapped photo", viewer_page() is not None,
+          str(viewer_page()))
+    check("viewer overlay shows the description",
+          bool(find_all(dump(), text="Winter jacket")))
+    check("viewer Edit opens the metadata editor", tap_text("Edit", timeout=6))
+    check("edit dialog opens", wait_for(text="Description (required)", timeout=6) is not None)
     fields = edit_texts()
     if len(fields) < 2:
         check("description prefilled", False, str([f.get("text") for f in fields]))
@@ -1644,7 +1775,15 @@ def t_preview_and_multiselect():
     fields = edit_texts()
     tap(fields[1]); wait_ime(); type_text("check hinges"); hide_ime(); time.sleep(0.8)
     tap_text("Save")
-    check("photo saved snackbar", snackbar_visible("Photo saved", timeout=8))
+    # With the viewer open the ContainerScreen snackbar host sits BEHIND the
+    # edge-to-edge viewer dialog, so "Photo saved" is not on the active
+    # window; the disk/EXIF checks and the overlay update below are hard.
+    check("photo saved snackbar", snackbar_visible("Photo saved", timeout=8),
+          "emitted behind the viewer dialog", soft=True)
+    # back in the viewer: its overlay reflects the saved metadata
+    check("viewer overlay updates after Save",
+          wait_for(text="Winter jackets x2", timeout=6) is not None)
+    check("close viewer returns to the grid", close_viewer())
     check("tile text updated", wait_for(text="Winter jackets x2", timeout=6) is not None)
     # the edit renamed the file on disk: EXIF description drives the name
     wj2 = fp("Garage", "Winter jackets x2.jpg")
@@ -2044,6 +2183,319 @@ def t_ai_autolabel():
             except Exception:
                 server.kill()
 
+def t_trash():
+    """Soft-delete end to end (Feature 1; default OFF). Enables the trash,
+    deletes a container with a gallery photo and proves the stamp layout
+    (.trash/<stamp>/<name> + .origin), lists/restores it from the Trash
+    screen, deletes it forever, then DISABLES the trash and proves a photo
+    delete is permanent (no .trash growth). Leaves the feature OFF; the
+    empty .trash dir is removed so the final disk audit sees the suite tree.
+    """
+    mark("11a trash")
+    check("starts on home", go_home())
+    # enable the trash via Settings
+    check("settings opens for trash", open_settings())
+    check("trash switch present", settings_switch(TRASH_ENABLE_LABEL) is not None)
+    check("trash switch ON", set_settings_switch(TRASH_ENABLE_LABEL, True))
+    check("disk: trash pref persisted ON",
+          'name="enabled" value="true"' in trash_enabled_pref(), trash_enabled_pref())
+    check("settings back after enabling trash", tap_desc("Back", timeout=5) and go_home())
+    # create "Doomed" with a gallery photo
+    check("root FAB opens create dialog", tap_desc("Add container"))
+    time.sleep(1.2)
+    fill_dialog("Doomed")
+    check("Doomed created", wait_for(text="Doomed", timeout=8) is not None)
+    tap_text("Doomed"); time.sleep(1.8)
+    check("gallery photo added to Doomed", add_gallery_photo("Trashed item", where="trash"))
+    check("photo added snackbar [trash]", snackbar_visible("Photo added", timeout=10))
+    check("disk: Doomed/Trashed item.jpg", fs_exists(fp("Doomed", "Trashed item.jpg")))
+    check("home before trashing Doomed", go_home())
+    # delete the container -> content moves to .trash
+    check("open Doomed row menu", row_menu("Doomed", "Options"))
+    time.sleep(1.2)
+    tap_text("Delete")
+    check("delete confirm uses trash wording",
+          wait_for(text="moved to the trash", timeout=5) is not None)
+    tap_text("Delete")
+    check("container deleted snackbar [trash]", snackbar_visible("Container deleted", timeout=10))
+    check("Doomed gone from the UI", not texts_exact("Doomed"))
+    stamps = trash_stamps()
+    check("disk: exactly one .trash stamp", len(stamps) == 1, str(stamps))
+    stamp = stamps[0] if stamps else ""
+    check("disk: stamp holds the Doomed subtree",
+          bool(stamp) and fs_isdir(stamp + "/Doomed"))
+    check("disk: trashed photo survived",
+          bool(stamp) and fs_exists(stamp + "/Doomed/Trashed item.jpg"))
+    check("disk: .origin sidecar written",
+          bool(stamp) and fs_exists(stamp + "/.origin"))
+    origin = fs_read(stamp + "/.origin").decode("utf-8", "replace") if stamp else ""
+    check("disk: .origin records root parent + container kind",
+          origin.splitlines()[:2] == ["", "container"], repr(origin))
+    check("disk: original Doomed path gone", not fs_exists(fp("Doomed")))
+    # Trash screen: list + restore
+    check("root overflow opens for Trash", open_screen_menu())
+    check("Trash entry opens the trash screen", tap_text("Trash", timeout=5))
+    check("trash screen title", wait_for(text="Trash", timeout=8) is not None)
+    check("trash entry listed", wait_for(text="Doomed", timeout=8) is not None)
+    check("trash entry shows its original location",
+          bool(find_all(dump(), text=TRASH_WAS_IN + "Inventory")))
+    check("trash entry offers Restore", bool(find_all(dump(), desc=RESTORE_LABEL)))
+    check("Restore tapped", tap_desc(RESTORE_LABEL, timeout=5))
+    check("restore snackbar", snackbar_visible("Restored", timeout=8))
+    check("disk: Doomed restored to the root", fs_wait_exists(fp("Doomed")))
+    check("disk: restored photo intact", fs_exists(fp("Doomed", "Trashed item.jpg")))
+    check("disk: stamp removed after restore", not trash_stamps())
+    check("trash now empty", wait_for(text=TRASH_EMPTY, timeout=8) is not None)
+    check("back home from trash", tap_desc("Back", timeout=5) and go_home())
+    # delete again, then Delete forever
+    check("open Doomed row menu again", row_menu("Doomed", "Options"))
+    time.sleep(1.2)
+    tap_text("Delete")
+    check("second delete confirm (trash wording)",
+          wait_for(text="moved to the trash", timeout=5) is not None)
+    tap_text("Delete")
+    check("Doomed gone again", not texts_exact("Doomed"))
+    check("second delete snackbar", snackbar_visible("Container deleted", timeout=10))
+    check("disk: second stamp written", len(trash_stamps()) == 1, str(trash_stamps()))
+    check("root overflow opens for trash #2", open_screen_menu())
+    check("Trash entry opens again", tap_text("Trash", timeout=5))
+    check("entry listed for delete-forever", wait_for(text="Doomed", timeout=8) is not None)
+    check("Delete forever opens the confirm", tap_desc(DELETE_FOREVER_LABEL, timeout=5))
+    check("delete-forever confirm shown",
+          wait_for(text="Permanently delete", timeout=5) is not None)
+    check("delete-forever confirmed", tap_text(DELETE_FOREVER_LABEL, timeout=5))
+    check("purged snackbar", snackbar_visible("Deleted forever", timeout=8))
+    check("disk: no Doomed path left", not any("Doomed" in p for p in tree()))
+    check("disk: trash empty after purge", not trash_stamps())
+    check("back home after purge", tap_desc("Back", timeout=5) and go_home())
+    # DISABLE the trash and prove a delete is permanent
+    check("settings opens to disable trash", open_settings())
+    check("trash switch OFF", set_settings_switch(TRASH_ENABLE_LABEL, False))
+    check("disk: trash pref persisted OFF",
+          'name="enabled" value="false"' in trash_enabled_pref(), trash_enabled_pref())
+    check("settings back after disabling", tap_desc("Back", timeout=5) and go_home())
+    sh(f"rm -rf {sq(fp('.trash'))}")  # empty dir left by the soft-delete round trip
+    check("disk: .trash cleared for the permanent phase", not fs_exists(fp(".trash")))
+    # seed a container + photo, delete the PHOTO permanently
+    sh(f"mkdir -p {sq(fp('Ephemeral'))}")
+    seed_photo("Ephemeral/Permanent item.jpg", "Permanent item")
+    check("disk: Ephemeral/Permanent item.jpg seeded",
+          fs_exists(fp("Ephemeral", "Permanent item.jpg")))
+    check("rescan adopts Ephemeral", rescan_from_root())
+    check("Ephemeral listed", wait_for(text="Ephemeral", timeout=8) is not None)
+    tap_text("Ephemeral"); time.sleep(1.8)
+    tile = wait_for(text="Permanent item", timeout=8)
+    check("Permanent item tile present", tile is not None)
+    if tile is not None:
+        tap(tile); time.sleep(1.5)
+        check("viewer opens for the permanent delete", viewer_open())
+        tap_text("Delete")
+        check("permanent-delete confirm wording",
+              wait_for(text="permanently deleted", timeout=5) is not None)
+        tap_text("Delete")
+        check("photo deleted snackbar [permanent]",
+              snackbar_visible("Photo deleted", timeout=10))
+    check("disk: photo permanently gone",
+          not fs_exists(fp("Ephemeral", "Permanent item.jpg")))
+    check("disk: permanent delete created no .trash", not fs_exists(fp(".trash")))
+    check("home after permanent photo delete", go_home())
+    check("open Ephemeral row menu", row_menu("Ephemeral", "Options"))
+    time.sleep(1.2)
+    tap_text("Delete")
+    check("Ephemeral delete is permanent",
+          wait_for(text="permanently deleted", timeout=5) is not None)
+    tap_text("Delete")
+    check("disk: Ephemeral container removed", not fs_exists(fp("Ephemeral")))
+    check("trash left OFF",
+          'name="enabled" value="false"' in trash_enabled_pref(), trash_enabled_pref())
+    check("home after trash scenario", go_home())
+
+def t_report():
+    """Inventory report export (Feature 2): overflow -> Export report writes
+    inventory-report.html + .csv into the inventory root. Seeds a container
+    and a photo with markup/comma metadata on disk for deterministic content,
+    pulls both files and asserts the HTML escaping / per-segment URL-encoding
+    / CSV row on the host, then removes the report files and the seeded
+    container so the final disk audit is unchanged."""
+    mark("11b report export")
+    check("starts on home", go_home())
+    seed = "Reportable/Report bold, comma.jpg"
+    sh(f"mkdir -p {sq(fp('Reportable'))}")
+    seed_photo(seed, "Report <b>bold</b>, comma", date="2026:05:04 08:00:00")
+    check("disk: seeded report photo", fs_exists(fp(seed)))
+    check("rescan adopts Reportable", rescan_from_root())
+    check("UI lists the Reportable container", wait_for(text="Reportable", timeout=8) is not None)
+    check("root overflow opens", open_screen_menu())
+    check("Export report tapped", tap_text(EXPORT_REPORT_LABEL, timeout=5))
+    check("report-written snackbar", snackbar_visible(REPORT_WRITTEN, timeout=10))
+    html = fp(REPORT_HTML)
+    csvp = fp(REPORT_CSV)
+    check("disk: inventory-report.html written", fs_exists(html))
+    check("disk: inventory-report.csv written", fs_exists(csvp))
+    # pull both and assert the exact markup / CSV on the host
+    fdh, local_html = tempfile.mkstemp(suffix=".html"); os.close(fdh)
+    fdc, local_csv = tempfile.mkstemp(suffix=".csv"); os.close(fdc)
+    adb("pull", html, local_html, timeout=30)
+    adb("pull", csvp, local_csv, timeout=30)
+    with open(local_html, encoding="utf-8") as fh: html_text = fh.read()
+    with open(local_csv, encoding="utf-8") as fh: csv_text = fh.read()
+    os.unlink(local_html); os.unlink(local_csv)
+    check("HTML has a per-container section heading", "<h2>Reportable</h2>" in html_text)
+    check("HTML escapes the description markup and comma",
+          "Report &lt;b&gt;bold&lt;/b&gt;, comma" in html_text
+          and "Report <b>bold</b>, comma" not in html_text)
+    check("HTML URL-encodes the relative img src per segment",
+          'src="Reportable/Report%20bold%2C%20comma.jpg"' in html_text,
+          "no URL-encoded src for the seeded photo")
+    import csv as _csv
+    rows = list(_csv.reader(csv_text.splitlines()))
+    check("CSV header is the contractual column list",
+          bool(rows) and rows[0] == ["containerPath", "fileName", "description",
+                                     "note", "dateTaken"], str(rows[:1]))
+    want = ["Reportable", "Report bold, comma.jpg",
+            "Report <b>bold</b>, comma", "", "2026-05-04"]
+    check("CSV module parses the expected seeded row", want in rows[1:], str(rows))
+    # cleanup: the report files + the seeded container (the report is invisible
+    # to the app, so the final tree must not carry either)
+    sh(f"rm -f {sq(html)} {sq(csvp)}")
+    check("disk: report files removed", not fs_exists(html) and not fs_exists(csvp))
+    check("home before report cleanup", go_home())
+    check("open Reportable row menu", row_menu("Reportable", "Options"))
+    time.sleep(1.2)
+    tap_text("Delete")
+    check("Reportable delete confirm (permanent)",
+          wait_for(text="permanently deleted", timeout=5) is not None)
+    tap_text("Delete")
+    check("Reportable gone from the UI", not texts_exact("Reportable"))
+    check("disk: Reportable removed", not fs_exists(fp("Reportable")))
+    check("home after report scenario", go_home())
+
+def t_breadcrumbs():
+    """Breadcrumb navigation (Feature 4): non-root screens show clickable
+    ancestor segments (container names as text) plus the root crumb exposed
+    only via content-desc 'Inventory'. Tapping an ancestor navigates there
+    with the back stack cleaned to the root; starting a drag swaps the
+    breadcrumb for the drag chips, and cancelling restores it. Runs on the
+    suite's current tree (Estate -> Storage unit -> Shelf A)."""
+    mark("11c breadcrumbs")
+    check("starts on home", go_home())
+    tap_text("Estate"); time.sleep(1.8)
+    check("breadcrumb: on Estate", bool(texts_exact("Estate")))
+    tap_text("Storage unit"); time.sleep(1.8)
+    tap_text("Shelf A"); time.sleep(1.8)
+    check("breadcrumb: on Shelf A", bool(texts_exact("Shelf A")))
+    d = dump()
+    check("breadcrumb shows ancestor names as text",
+          bool(find_all(d, text="Estate")) and bool(find_all(d, text="Storage unit")))
+    check("breadcrumb root is a content-desc, not a text node",
+          bool(find_all(d, desc="Inventory")) and not texts_exact("Inventory"),
+          str([n.get("text") for n in find_all(d, text="Inventory")]))
+    # tap the "Estate" ancestor segment -> navigate there
+    check("tap the Estate breadcrumb segment", tap_text("Estate", timeout=5))
+    time.sleep(1.5)
+    check("breadcrumb jump landed on Estate", bool(texts_exact("Estate")))
+    back(); time.sleep(1.5)
+    check("breadcrumb jump cleaned the stack (back -> Inventory)",
+          bool(texts_exact("Inventory")))
+    # deep again for the drag/chip swap
+    tap_text("Estate"); time.sleep(1.8)
+    tap_text("Storage unit"); time.sleep(1.8)
+    tap_text("Shelf A"); time.sleep(1.8)
+    check("deep again on Shelf A", bool(texts_exact("Shelf A")))
+    check("breadcrumb root crumb present before drag",
+          bool(find_all(dump(), desc="Inventory")))
+    tile = drag_by_desc("Winter jackets x2")
+    check("breadcrumb drag: photo tile located", tile is not None)
+    if tile is not None:
+        tx, ty = drag_center(tile)
+        drag_start(tx, ty)
+        check("breadcrumb drag: up-chip replaces the breadcrumb",
+              drag_up_chip() is not None)
+        check("breadcrumb drag: root crumb descriptor hidden",
+              not find_all(dump(), desc="Inventory"))
+        # cancel exactly like dnd6: BACK ends the session, then release
+        drag_move_to(tx, ty, tx, ty + 90)
+        sh("input keyevent 4"); time.sleep(0.5)
+        check("breadcrumb drag: BACK ended the drag session", drag_up_chip() is None)
+        motion_up(tx, ty + 90); time.sleep(1.5)
+        tap_desc("Exit selection", timeout=5); time.sleep(0.8)
+        check("breadcrumb drag: breadcrumbs return after cancel",
+              bool(find_all(dump(), desc="Inventory")))
+        check("breadcrumb drag: photo untouched",
+              fs_exists(fp("Estate", "Storage unit", "Shelf A", "Winter jackets x2.jpg")))
+    check("home after breadcrumbs", go_home())
+
+def t_viewer():
+    """Full-screen photo viewer (Feature 3): a container with three photos,
+    paging via swipe and the "N / M" indicator, the Edit flow (note changed
+    and the overlay updated), Delete + confirm advancing the pager, and Close
+    returning to the grid. The photos are disk-seeded with distinct dates so
+    the page order is deterministic; the container is removed afterwards."""
+    mark("11d photo viewer")
+    check("starts on home", go_home())
+    base = "Viewer"
+    sh(f"mkdir -p {sq(fp(base))}")
+    seed_photo(base + "/View one.jpg", "View one", date="2026:01:01 12:00:00")
+    seed_photo(base + "/View two.jpg", "View two", date="2026:01:02 12:00:00")
+    seed_photo(base + "/View three.jpg", "View three", date="2026:01:03 12:00:00")
+    check("disk: three seeded viewer photos",
+          all(fs_exists(fp(base, n)) for n in
+              ("View one.jpg", "View two.jpg", "View three.jpg")))
+    check("rescan adopts the Viewer container", rescan_from_root())
+    check("Viewer listed", wait_for(text=base, timeout=8) is not None)
+    tap_text(base); time.sleep(1.8)
+    # newest-first: View three, View two, View one. Tap the middle tile.
+    tile = wait_for(text="View two", timeout=8)
+    check("middle viewer tile present", tile is not None)
+    if tile is None:
+        check("viewer scenario aborted (no tile)", False); return
+    tap(tile); time.sleep(1.5)
+    check("viewer opens on page 2 of 3", viewer_page() == (2, 3), str(viewer_page()))
+    check("viewer overlay shows the description",
+          bool(find_all(dump(), text="View two")))
+    # swipe left -> next page
+    sh(f"input swipe {int(SW*0.85)} {SH//2} {int(SW*0.15)} {SH//2} 300")
+    time.sleep(1.5)
+    check("swipe advances to page 3 of 3", viewer_page() == (3, 3), str(viewer_page()))
+    # Edit from the viewer, change the note, Save -> overlay updates
+    check("viewer Edit opens the editor", tap_text("Edit", timeout=6))
+    check("viewer editor opens", wait_for(text="Description (required)", timeout=6) is not None)
+    fields = edit_texts()
+    if len(fields) >= 2:
+        tap(fields[1]); wait_ime(); clear_field(); type_text("viewer note")
+        ensure_ime_hidden(); time.sleep(0.8)
+    tap_text("Save")
+    check("viewer overlay shows the saved note",
+          wait_for(text="viewer note", timeout=6) is not None)
+    # Delete the current photo -> confirm -> the pager advances
+    tap_text("Delete")
+    check("viewer delete confirm (permanent)",
+          wait_for(text="permanently deleted", timeout=5) is not None)
+    tap_text("Delete")
+    # As above: the delete announcement lands on the ContainerScreen host,
+    # which is behind the still-open viewer dialog. Disk is asserted hard.
+    check("photo deleted snackbar [viewer]", snackbar_visible("Photo deleted", timeout=10),
+          "emitted behind the viewer dialog", soft=True)
+    check("viewer stays open and advances to 2 / 2",
+          viewer_page() == (2, 2), str(viewer_page()))
+    check("viewer Close returns to the grid", close_viewer())
+    time.sleep(1.0)
+    d = dump()
+    check("grid drops the deleted tile", not find_all(d, text="View one"))
+    check("grid keeps the other two tiles",
+          bool(find_all(d, text="View two")) and bool(find_all(d, text="View three")))
+    check("disk: deleted viewer photo gone", not fs_exists(fp(base, "View one.jpg")))
+    # cleanup: remove the seeded container (trash is OFF -> permanent)
+    check("home before viewer cleanup", go_home())
+    check("open Viewer row menu", row_menu(base, "Options"))
+    time.sleep(1.2)
+    tap_text("Delete")
+    check("Viewer delete confirm (permanent)",
+          wait_for(text="permanently deleted", timeout=5) is not None)
+    tap_text("Delete")
+    check("disk: Viewer container removed", not fs_exists(fp(base)))
+    check("home after viewer scenario", go_home())
+
 def t_drag_drop():
     """Drag-and-drop end to end, on the suite tree as the AI scenario left
     it (root: Attic shelf + Estate → Storage unit → Shelf A/Shelf B).
@@ -2426,6 +2878,10 @@ def main():
     t_conflicts()
     t_pc_edits()
     t_ai_autolabel()
+    t_trash()
+    t_report()
+    t_breadcrumbs()
+    t_viewer()
     t_drag_drop()
     t_disk_final()
     stop_dump_server()
