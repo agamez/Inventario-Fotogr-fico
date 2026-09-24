@@ -3,6 +3,7 @@ package com.inventory.desktop
 import com.inventory.desktop.exif.DesktopExifEditor
 import com.inventory.desktop.ui.DesktopStrings
 import com.inventory.storage.PhotoMeta
+import com.inventory.storage.TrashManager
 import java.io.File
 import java.nio.file.Files
 import kotlin.test.Test
@@ -25,9 +26,17 @@ import kotlinx.coroutines.test.runTest
  */
 class DesktopAppControllerTest {
 
-    private fun controller(): Pair<DesktopAppController, File> {
+    /**
+     * A controller over a fresh temp root with an isolated, throwaway
+     * config file (never the user's real one). [trashEnabled] flips the
+     * optional soft-delete switch for the trash-specific tests.
+     */
+    private fun controller(trashEnabled: Boolean = false): Pair<DesktopAppController, File> {
         val root = Files.createTempDirectory("pi-controller").toFile()
-        return DesktopAppController(root) to root
+        val configFile = File(Files.createTempDirectory("pi-config").toFile(), "config.properties")
+        val config = DesktopConfig(configFile)
+        if (trashEnabled) config.setTrashEnabled(true)
+        return DesktopAppController(root, config = config) to root
     }
 
     private fun photo(description: String?, note: String? = null): ByteArray =
@@ -199,5 +208,116 @@ class DesktopAppControllerTest {
         // snapshot behind it is the synchronous source of truth.
         assertEquals(1, app.snapshot.value.conflictCount)
         assertTrue(app.snapshot.value.allPhotos.single().isConflict)
+    }
+
+    @Test
+    fun trashingContainerMovesSubtreeIntoTrashWithOrigin() = runTest {
+        val (app, root) = controller(trashEnabled = true)
+        app.refreshNow()
+        app.createFolder("", "Box")
+        app.importPhoto("Box", photo("Inside"), "Inside", null)
+
+        val outcome = app.deleteFolder("Box")
+        assertEquals(DesktopAppController.Outcome.Deleted, outcome)
+        assertFalse(File(root, "Box").exists())
+        assertNull(app.snapshot.value.containersByParent[""]?.firstOrNull { it.name == "Box" })
+
+        val stamp = File(root, TrashManager.TRASH_DIR).listFiles()!!.single()
+        assertTrue(File(stamp, "Box/Inside.jpg").isFile)
+        val origin = File(stamp, TrashManager.ORIGIN_FILE).readLines()
+        assertEquals("", origin[0])
+        assertEquals(TrashManager.KIND_CONTAINER, origin[1])
+
+        val entry = app.trashEntries.value.single()
+        assertEquals("Box", entry.name)
+        assertEquals("", entry.originalParentRel)
+        assertEquals(TrashManager.KIND_CONTAINER, entry.kind)
+        assertEquals(stamp.name, entry.id)
+        assertTrue(entry.deletedAt > 0L)
+    }
+
+    @Test
+    fun restoreReturnsEntryToOriginalParentWithCollisionSuffix() = runTest {
+        val (app, root) = controller(trashEnabled = true)
+        app.refreshNow()
+        app.createFolder("", "Parent")
+        app.createFolder("Parent", "Box")
+        app.importPhoto("Parent/Box", photo("Thing"), "Thing", null)
+
+        app.deleteFolder("Parent/Box")
+        val entry = app.trashEntries.value.single()
+        // Occupy the original name again so the restore must suffix.
+        app.createFolder("Parent", "Box")
+
+        assertTrue(app.restore(entry.id))
+        assertTrue(File(root, "Parent/Box (2)").isDirectory)
+        assertTrue(File(root, "Parent/Box (2)/Thing.jpg").isFile)
+        assertTrue(app.trashEntries.value.isEmpty())
+        assertEquals(
+            "Thing",
+            app.snapshot.value.allPhotos.first { it.relPath == "Parent/Box (2)/Thing.jpg" }.description,
+        )
+    }
+
+    @Test
+    fun deleteForeverRemovesTheStampFolder() = runTest {
+        val (app, root) = controller(trashEnabled = true)
+        app.refreshNow()
+        app.createFolder("", "Doomed")
+        app.deleteFolder("Doomed")
+        val entry = app.trashEntries.value.single()
+
+        assertTrue(app.deleteForever(entry.id))
+        assertFalse(File(File(root, TrashManager.TRASH_DIR), entry.id).exists())
+        assertTrue(app.trashEntries.value.isEmpty())
+    }
+
+    @Test
+    fun trashListingReportsNameParentKindAndTime() = runTest {
+        val (app, root) = controller(trashEnabled = true)
+        app.refreshNow()
+        app.createFolder("", "Here")
+        app.importPhoto("Here", photo("Shot"), "Shot", null)
+
+        app.deletePhoto("Here/Shot.jpg")
+        assertFalse(File(root, "Here/Shot.jpg").exists())
+
+        val entry = app.trashEntries.value.single()
+        assertEquals("Shot.jpg", entry.name)
+        assertEquals("Here", entry.originalParentRel)
+        assertEquals(TrashManager.KIND_PHOTO, entry.kind)
+        assertTrue(entry.deletedAt > 0L)
+        assertTrue(File(File(root, TrashManager.TRASH_DIR), entry.id).isDirectory)
+        assertTrue(File(File(File(root, TrashManager.TRASH_DIR), entry.id), "Shot.jpg").isFile)
+        val origin = File(File(File(root, TrashManager.TRASH_DIR), entry.id), TrashManager.ORIGIN_FILE).readLines()
+        assertEquals("Here", origin[0])
+        assertEquals(TrashManager.KIND_PHOTO, origin[1])
+    }
+
+    @Test
+    fun disabledDeleteIsPermanentAndLeavesNoTrash() = runTest {
+        val (app, root) = controller()
+        app.refreshNow()
+        app.createFolder("", "Gone")
+        app.importPhoto("Gone", photo("Bytes"), "Bytes", null)
+
+        app.deleteFolder("Gone")
+
+        assertFalse(File(root, "Gone").exists())
+        assertFalse(File(root, TrashManager.TRASH_DIR).exists())
+        assertTrue(app.trashEntries.value.isEmpty())
+    }
+
+    @Test
+    fun enabledDeleteMovesTheEntryIntoTheTrash() = runTest {
+        val (app, root) = controller(trashEnabled = true)
+        app.refreshNow()
+        app.createFolder("", "Kept")
+
+        app.deleteFolder("Kept")
+
+        assertFalse(File(root, "Kept").exists())
+        assertTrue(File(root, TrashManager.TRASH_DIR).isDirectory)
+        assertTrue(app.trashEntries.value.any { it.name == "Kept" })
     }
 }

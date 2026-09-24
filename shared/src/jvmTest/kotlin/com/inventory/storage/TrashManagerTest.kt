@@ -183,4 +183,27 @@ class TrashManagerTest {
         assertEquals(0, trash.purgeOlderThan(30))
         assertEquals(1, trash.listEntries().size)
     }
+
+    @Test
+    fun purgeOverSizeCapDropsTheOldestEntriesUntilUnderTheCap() = runTest {
+        val backend = backend()
+        var now = 1_700_000_000_000L
+        val trash = TrashManager(backend) { now }
+        backend.createFolder("", "A")
+        backend.createFolder("", "B")
+        // Distinct file sizes via distinct contents: two 400-byte photos
+        // plus their .origin sidecars exceed the 500-byte test cap.
+        backend.writePhotoBytes("A/old.jpg", ByteArray(400))
+        backend.writePhotoBytes("B/new.jpg", ByteArray(400))
+        assertTrue(trash.trashPhotos(listOf("A/old.jpg")))
+        now += 24L * 60 * 60 * 1000
+        assertTrue(trash.trashPhotos(listOf("B/new.jpg")))
+        assertTrue(trash.totalTrashBytes() > 500L)
+
+        val purged = trash.purgeOverSizeCap(500L)
+
+        assertEquals(1, purged)
+        assertEquals(listOf("new.jpg"), trash.listEntries().map { it.name })
+        assertTrue(trash.totalTrashBytes() <= 500L)
+    }
 }

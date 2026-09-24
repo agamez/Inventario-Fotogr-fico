@@ -172,6 +172,7 @@ fun PhotoDetailsDialog(
     onMoveRequested: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
+    val trashEnabled by controller.trashEnabled.collectAsState()
     var description by remember(photo.relPath, photo.description) { mutableStateOf(photo.description) }
     var note by remember(photo.relPath, photo.note) { mutableStateOf(photo.note ?: "") }
     var confirmDelete by remember(photo.relPath) { mutableStateOf(false) }
@@ -252,7 +253,11 @@ fun PhotoDetailsDialog(
     if (confirmDelete) {
         ConfirmDialog(
             title = DesktopStrings.DELETE_PHOTO_TITLE,
-            message = DesktopStrings.DELETE_PHOTO_MESSAGE.format(photo.description),
+            message = (if (trashEnabled) {
+                DesktopStrings.DELETE_PHOTO_MESSAGE
+            } else {
+                DesktopStrings.DELETE_PHOTO_MESSAGE_PERMANENT
+            }).format(photo.description),
             confirmLabel = DesktopStrings.DELETE,
             onDismiss = { confirmDelete = false },
             onConfirm = {
@@ -378,6 +383,7 @@ fun SettingsDialog(
     onDismiss: () -> Unit,
 ) {
     val settings by controller.aiSettings.collectAsState()
+    val trashEnabled by controller.trashEnabled.collectAsState()
     val scope = rememberCoroutineScope()
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
@@ -475,6 +481,22 @@ fun SettingsDialog(
                         text = result,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(DesktopStrings.TRASH_ENABLE, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            DesktopStrings.TRASH_ENABLE_HELP,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Switch(
+                        checked = trashEnabled,
+                        onCheckedChange = { controller.setTrashEnabled(it) },
                     )
                 }
             }

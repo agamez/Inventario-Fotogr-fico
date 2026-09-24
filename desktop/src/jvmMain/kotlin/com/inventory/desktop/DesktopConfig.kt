@@ -26,16 +26,18 @@ data class AiSettings(
 }
 
 /**
- * The desktop app's local state: which folder is the inventory root and
- * the optional AI auto-label configuration. Persisted in
+ * The desktop app's local state: which folder is the inventory root, the
+ * optional AI auto-label configuration and the optional trash (soft-delete)
+ * switch. Persisted in
  * `~/.config/photoinventory/config.properties` — the same tree the
  * Android app manages, addressed directly through the shared
  * [com.inventory.storage.FileBackend] (no SAF, no permission dance on a
  * desktop filesystem).
  *
- * The AI fields are mirrored in an observable [aiSettings] flow so the
- * controller and the UI react to edits without polling the file; every
- * write is atomic (temp + rename) and preserves the other keys.
+ * The AI fields are mirrored in an observable [aiSettings] flow and the
+ * trash switch in [trashEnabled], so the controller and the UI react to
+ * edits without polling the file; every write is atomic (temp + rename)
+ * and preserves the other keys.
  *
  * A missing file, a blank value or a stored root that is no longer a
  * directory all read back as `null`, so the UI falls through to its
@@ -50,6 +52,11 @@ class DesktopConfig(
 
     /** The current AI auto-label settings; edits persist immediately. */
     val aiSettings: StateFlow<AiSettings> = _aiSettings.asStateFlow()
+
+    private val _trashEnabled = MutableStateFlow(loadTrashEnabled())
+
+    /** Whether deletions move to `.trash`; off by default. */
+    val trashEnabled: StateFlow<Boolean> = _trashEnabled.asStateFlow()
 
     /** The saved inventory root folder, or null when absent/unusable. */
     fun loadRoot(): File? {
@@ -93,6 +100,18 @@ class DesktopConfig(
 
     fun setAiOutputLanguage(value: String) = persistAi { it.copy(outputLanguage = value) }
 
+    /** Reads the trash switch from disk (false when the file/key is absent). */
+    fun loadTrashEnabled(): Boolean =
+        readProperties()?.getProperty(KEY_TRASH_ENABLED)?.toBooleanStrictOrNull() ?: false
+
+    /** Persists the trash switch (atomic temp + rename), leaving other keys untouched. */
+    fun setTrashEnabled(value: Boolean) {
+        val properties = readProperties() ?: Properties()
+        properties.setProperty(KEY_TRASH_ENABLED, value.toString())
+        write(properties)
+        _trashEnabled.value = value
+    }
+
     /** Writes the full AI snapshot (all five keys) and updates the flow. */
     private fun persistAi(transform: (AiSettings) -> AiSettings) {
         val next = transform(_aiSettings.value)
@@ -129,6 +148,7 @@ class DesktopConfig(
         private const val KEY_AI_API_KEY = "aiApiKey"
         private const val KEY_AI_MODEL = "aiModel"
         private const val KEY_AI_OUTPUT_LANGUAGE = "aiOutputLanguage"
+        private const val KEY_TRASH_ENABLED = "trashEnabled"
         private const val CONFIG_DIR_PROPERTY = "user.home"
         private const val CONFIG_SUBDIR = ".config/photoinventory"
         private const val CONFIG_FILE_NAME = "config.properties"

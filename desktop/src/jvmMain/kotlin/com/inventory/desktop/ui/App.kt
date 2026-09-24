@@ -34,6 +34,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -115,6 +116,7 @@ fun App(controller: DesktopAppController) {
     val pendingQueue by controller.pendingQueue.collectAsState()
     val aiSettings by controller.aiSettings.collectAsState()
     val aiSuggestions by controller.aiSuggestions.collectAsState()
+    val trashEnabled by controller.trashEnabled.collectAsState()
     val scope = rememberCoroutineScope()
 
     val dragController = remember { DragController() }
@@ -126,6 +128,7 @@ fun App(controller: DesktopAppController) {
 
     var selectedFolder by remember { mutableStateOf<String?>(null) }
     var showGlobalSearch by remember { mutableStateOf(false) }
+    var showTrash by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var globalQuery by remember { mutableStateOf("") }
     var browseQuery by remember { mutableStateOf("") }
@@ -310,30 +313,38 @@ fun App(controller: DesktopAppController) {
                 folderRel = folderRel,
                 scanning = scanning,
                 showGlobalSearch = showGlobalSearch,
+                showTrash = showTrash,
                 onRescan = {
                     controller.refresh()
                     message = DesktopStrings.MSG_RESCANNED
                 },
                 onToggleSearch = {
                     showGlobalSearch = !showGlobalSearch
+                    if (showGlobalSearch) showTrash = false
                     browseQuery = ""
+                },
+                onToggleTrash = {
+                    showTrash = !showTrash
+                    if (showTrash) showGlobalSearch = false
                 },
                 onOpenSettings = { showSettings = true },
             )
-            ActionBar(
-                folderRel = folderRel,
-                rootPath = controller.rootDir.absolutePath,
-                onUp = { selectedFolder = parentRelOf(folderRel) },
-                onImport = {
-                    scope.launch {
-                        val files = pickJpegFiles(DesktopStrings.IMAGE_PICKER_TITLE, controller.rootDir.absolutePath)
-                        if (files.isEmpty()) return@launch
-                        val staged = withFilesRead(files)
-                        if (staged.isNotEmpty()) controller.queueForImport(staged)
-                    }
-                },
-                onAddContainer = { showCreateDialog = true },
-            )
+            if (!showTrash) {
+                ActionBar(
+                    folderRel = folderRel,
+                    rootPath = controller.rootDir.absolutePath,
+                    onUp = { selectedFolder = parentRelOf(folderRel) },
+                    onImport = {
+                        scope.launch {
+                            val files = pickJpegFiles(DesktopStrings.IMAGE_PICKER_TITLE, controller.rootDir.absolutePath)
+                            if (files.isEmpty()) return@launch
+                            val staged = withFilesRead(files)
+                            if (staged.isNotEmpty()) controller.queueForImport(staged)
+                        }
+                    },
+                    onAddContainer = { showCreateDialog = true },
+                )
+            }
             // Ancestor drop chips: shown for the whole drag when the current
             // folder is not the root. They are drop-only.
             if (dragController.payload != null && !isRoot) {
@@ -363,7 +374,12 @@ fun App(controller: DesktopAppController) {
                 ConflictBanner(conflictCount)
             }
 
-            if (showGlobalSearch) {
+            if (showTrash) {
+                TrashView(
+                    controller = controller,
+                    onMessage = { message = it },
+                )
+            } else if (showGlobalSearch) {
                 GlobalSearchView(
                     controller = controller,
                     query = globalQuery,
@@ -470,7 +486,11 @@ fun App(controller: DesktopAppController) {
             val (containers, photos) = snapshot.subtreeCounts[target.relPath] ?: (0 to 0)
             ConfirmDialog(
                 title = DesktopStrings.DELETE_CONTAINER_TITLE,
-                message = DesktopStrings.DELETE_CONTAINER_MESSAGE.format(target.name) +
+                message = (if (trashEnabled) {
+                    DesktopStrings.DELETE_CONTAINER_MESSAGE
+                } else {
+                    DesktopStrings.DELETE_CONTAINER_MESSAGE_PERMANENT
+                }).format(target.name) +
                     "\n" + DesktopStrings.DELETE_CONTAINS.format(
                         counted(containers, DesktopStrings.CONTAINER_COUNTED_ONE, DesktopStrings.CONTAINERS_COUNTED),
                         counted(photos, DesktopStrings.PHOTO_COUNTED_ONE, DesktopStrings.PHOTOS_COUNTED),
@@ -601,8 +621,10 @@ private fun TopBar(
     folderRel: String,
     scanning: Boolean,
     showGlobalSearch: Boolean,
+    showTrash: Boolean,
     onRescan: () -> Unit,
     onToggleSearch: () -> Unit,
+    onToggleTrash: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     Surface(tonalElevation = 2.dp) {
@@ -647,6 +669,12 @@ private fun TopBar(
                 Icon(
                     imageVector = if (showGlobalSearch) Icons.Filled.Close else Icons.Filled.Search,
                     contentDescription = DesktopStrings.SEARCH,
+                )
+            }
+            IconButton(onClick = onToggleTrash) {
+                Icon(
+                    imageVector = if (showTrash) Icons.Filled.Close else Icons.Filled.Delete,
+                    contentDescription = DesktopStrings.TRASH,
                 )
             }
             IconButton(onClick = onOpenSettings) {

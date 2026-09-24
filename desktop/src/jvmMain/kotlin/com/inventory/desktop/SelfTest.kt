@@ -4,6 +4,7 @@ import com.inventory.ai.VisionOutcome
 import com.inventory.desktop.exif.DesktopExifEditor
 import com.inventory.desktop.ui.DragKind
 import com.inventory.desktop.ui.DragPayload
+import com.inventory.storage.TrashManager
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import java.io.File
@@ -162,7 +163,70 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
         )
     }
 
-    // 13. AI auto-label segment against an in-test loopback mock server
+    // 13. Trash segment (soft delete / undo) — BOTH modes. OFF (the default):
+    //     deletions are permanent and leave no .trash behind. ON: an entry is
+    //     moved into a stamp folder with its sidecar, restored to its original
+    //     parent, then trashed again and deleted forever.
+    val permanentFolder = controller.createFolder("", "Permanent").first
+    report.check("permanent-mode container created", permanentFolder == "Permanent", "got $permanentFolder")
+    if (permanentFolder != null) {
+        controller.importPhoto(permanentFolder, syntheticJpeg(), "Permanent photo", null)
+        val deleted = controller.deleteFolder(permanentFolder)
+        report.check("trash off: delete outcome", deleted == DesktopAppController.Outcome.Deleted, "got $deleted")
+        report.check("trash off: folder gone from disk", !File(folder, permanentFolder).exists())
+        report.check("trash off: no .trash created", !File(folder, TrashManager.TRASH_DIR).exists())
+    }
+
+    controller.setTrashEnabled(true)
+    report.check("trash switch enabled", controller.trashEnabled.value)
+
+    val trashFolder = controller.createFolder("", "Trashable").first
+    report.check("trash container created", trashFolder == "Trashable", "got $trashFolder")
+    if (trashFolder != null) {
+        controller.importPhoto(trashFolder, syntheticJpeg(), "Trash photo", null)
+        val trashed = controller.deleteFolder(trashFolder)
+        report.check("container trashed (outcome)", trashed == DesktopAppController.Outcome.Deleted, "got $trashed")
+        report.check("trashed container gone from its old home", !File(folder, trashFolder).exists())
+
+        val boxEntry = controller.trashEntries.value.firstOrNull { it.name == "Trashable" }
+        report.check("trash lists the container", boxEntry != null, "got ${controller.trashEntries.value.map { it.name }}")
+        report.check("trash entry original parent", boxEntry?.originalParentRel == "", "got ${boxEntry?.originalParentRel}")
+        report.check("trash entry kind is container", boxEntry?.kind == TrashManager.KIND_CONTAINER, "got ${boxEntry?.kind}")
+        report.check("trash entry has a deletion time", (boxEntry?.deletedAt ?: 0L) > 0L, "got ${boxEntry?.deletedAt}")
+        val stampDir = boxEntry?.let { File(folder, "${TrashManager.TRASH_DIR}/${it.id}") }
+        report.check(
+            "trash stamp holds the subtree and .origin",
+            stampDir != null &&
+                File(stampDir, "Trashable/Trash photo.jpg").isFile &&
+                File(stampDir, TrashManager.ORIGIN_FILE).isFile,
+            "got ${stampDir?.absolutePath}",
+        )
+
+        val restored = boxEntry?.let { controller.restore(it.id) } ?: false
+        report.check(
+            "container restored to its parent",
+            restored && File(folder, "Trashable/Trash photo.jpg").isFile,
+        )
+        report.check(
+            "trash no longer lists the restored container",
+            controller.trashEntries.value.none { it.name == "Trashable" },
+            "got ${controller.trashEntries.value.map { it.name }}",
+        )
+
+        controller.deleteFolder("Trashable")
+        val again = controller.trashEntries.value.firstOrNull { it.name == "Trashable" }
+        report.check("container trashed again", again != null)
+        val purged = again?.let { controller.deleteForever(it.id) } ?: false
+        report.check(
+            "deleteForever removes the stamp from disk",
+            purged && again != null && !File(folder, "${TrashManager.TRASH_DIR}/${again.id}").exists(),
+        )
+        controller.emptyTrash()
+        report.check("emptyTrash leaves nothing", controller.trashEntries.value.isEmpty(), "got ${controller.trashEntries.value.map { it.name }}")
+    }
+    controller.setTrashEnabled(false)
+
+    // 14. AI auto-label segment against an in-test loopback mock server
     //     (fully self-contained, no external services). The controller is
     //     reused: configure AI, stage one photo, await the suggestion,
     //     save it, then turn AI back off and tear the mock down.

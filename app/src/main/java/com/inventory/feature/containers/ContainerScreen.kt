@@ -898,6 +898,7 @@ fun ContainerScreen(
     uiState.deleteCandidate?.let { candidate ->
         DeleteContainerDialog(
             candidate = candidate,
+            trashEnabled = uiState.trashEnabled,
             onDismiss = viewModel::dismissDelete,
             onConfirm = viewModel::confirmDelete,
         )
@@ -908,7 +909,16 @@ fun ContainerScreen(
             onDismissRequest = { confirmDeleteSelection = false },
             title = { Text(stringResource(R.string.delete)) },
             text = {
-                Text(stringResource(R.string.delete_photos_confirm, selectedCount))
+                Text(
+                    stringResource(
+                        if (uiState.trashEnabled) {
+                            R.string.delete_photos_confirm
+                        } else {
+                            R.string.delete_photos_confirm_permanent
+                        },
+                        selectedCount,
+                    ),
+                )
             },
             confirmButton = {
                 TextButton(
@@ -935,7 +945,11 @@ fun ContainerScreen(
             text = {
                 Text(
                     stringResource(
-                        R.string.delete_photo_message,
+                        if (uiState.trashEnabled) {
+                            R.string.delete_photo_message
+                        } else {
+                            R.string.delete_photo_message_permanent
+                        },
                         photo.description ?: photo.name,
                     ),
                 )
@@ -1808,6 +1822,7 @@ private fun ContainerPathPickerSheet(
 @Composable
 private fun DeleteContainerDialog(
     candidate: ContainerViewModel.DeleteCandidate,
+    trashEnabled: Boolean,
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
@@ -1817,7 +1832,11 @@ private fun DeleteContainerDialog(
         text = {
             Text(
                 stringResource(
-                    R.string.delete_container_message,
+                    if (trashEnabled) {
+                        R.string.delete_container_message
+                    } else {
+                        R.string.delete_container_message_permanent
+                    },
                     candidate.name,
                     candidate.childContainers,
                     candidate.childPhotos,

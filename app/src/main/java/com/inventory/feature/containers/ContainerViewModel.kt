@@ -15,6 +15,7 @@ import com.inventory.cache.CacheDao
 import com.inventory.cache.CacheEntry
 import com.inventory.cache.ChildCounts
 import com.inventory.cache.InventoryScanner
+import com.inventory.settings.TrashPrefs
 import com.inventory.storage.InventoryStore
 import com.inventory.storage.StorageMode
 import com.inventory.storage.TrashManager
@@ -70,6 +71,7 @@ class ContainerViewModel @Inject constructor(
     private val scanner: InventoryScanner,
     private val messageBus: UserMessageBus,
     private val visionPrefs: VisionPrefs,
+    private val trashPrefs: TrashPrefs,
     private val trashManager: TrashManager,
 ) : ViewModel() {
 
@@ -105,6 +107,7 @@ class ContainerViewModel @Inject constructor(
         val folderMissing: Boolean = false,
         val scanning: Boolean = false,
         val conflictCount: Int = 0,
+        val trashEnabled: Boolean = false,
         val isLoading: Boolean = true,
     )
 
@@ -187,7 +190,8 @@ class ContainerViewModel @Inject constructor(
     private val scanSlice = combine(
         scanner.scanState.map { it.scanning },
         dao.countConflicts(),
-    ) { scanning, conflicts -> scanning to conflicts }
+        trashPrefs.enabled,
+    ) { scanning, conflicts, trashEnabled -> Triple(scanning, conflicts, trashEnabled) }
 
     val uiState: StateFlow<ContainerUiState> = combine(
         childrenFlow,
@@ -195,7 +199,7 @@ class ContainerViewModel @Inject constructor(
         photoSlice,
         folderFactsFlow,
         scanSlice,
-    ) { children, counts, slice, facts, (scanning, conflicts) ->
+    ) { children, counts, slice, facts, (scanning, conflicts, trashEnabled) ->
         ContainerUiState(
             isRoot = isRoot,
             containerName = folderRel.substringAfterLast('/'),
@@ -211,6 +215,7 @@ class ContainerViewModel @Inject constructor(
             folderMissing = !isRoot && !facts.exists,
             scanning = scanning,
             conflictCount = conflicts,
+            trashEnabled = trashEnabled,
             isLoading = false,
         )
     }.stateIn(
@@ -311,10 +316,17 @@ class ContainerViewModel @Inject constructor(
         // Non-root screens can scan on entry straight away; the root screen
         // waits for the storage gate to call [onStorageReady].
         if (!isRoot) refresh()
-        // Opportunistic auto-purge of entries older than 30 days. Fire-and-
-        // forget: a no-op before a storage mode is chosen (the routing
-        // backend is inert then) and never blocks the screen.
-        viewModelScope.launch { trashManager.purgeOlderThan() }
+        // Opportunistic auto-purge of entries older than 30 days plus the
+        // 500 MB size cap, but ONLY while the optional trash is enabled
+        // (off by default: deletions are permanent, so there is nothing to
+        // purge). Fire-and-forget: a no-op before a storage mode is chosen
+        // (the routing backend is inert then) and never blocks the screen.
+        viewModelScope.launch {
+            if (trashPrefs.enabled.value) {
+                trashManager.purgeOlderThan()
+                trashManager.purgeOverSizeCap()
+            }
+        }
         // Cross-screen announcements (camera save, cover capture, the
         // pop-after-rename of a child screen) arrive on the app-level bus;
         // this ViewModel outlives those screens in the back stack, and every
@@ -499,13 +511,17 @@ class ContainerViewModel @Inject constructor(
         }
     }
 
-    /** Moves the confirmed folder with its whole subtree into the trash. */
+    /** Deletes the confirmed folder: trashed when enabled, else permanent. */
     fun confirmDelete() {
         val candidate = _deleteCandidate.value ?: return
         _deleteCandidate.value = null
         val isSelf = candidate.relPath == folderRel
         viewModelScope.launch {
-            trashManager.trashContainer(candidate.relPath)
+            if (trashPrefs.enabled.value) {
+                trashManager.trashContainer(candidate.relPath)
+            } else {
+                store.deleteFolder(candidate.relPath)
+            }
             scanner.rescan()
             if (isSelf) {
                 messageBus.post(R.string.container_deleted)
@@ -677,19 +693,27 @@ class ContainerViewModel @Inject constructor(
 
     fun deletePhoto(relPath: String) {
         viewModelScope.launch {
-            trashManager.trashPhotos(listOf(relPath))
+            if (trashPrefs.enabled.value) {
+                trashManager.trashPhotos(listOf(relPath))
+            } else {
+                store.deletePhoto(relPath)
+            }
             scanner.rescan()
             _selectedPaths.update { current -> current - relPath }
             sendEvent(R.string.photo_deleted)
         }
     }
 
-    /** Moves every selected photo file into the trash; the confirmation itself lives in the UI. */
+    /** Deletes every selected photo file; the confirmation itself lives in the UI. */
     fun deleteSelected() {
         val paths = _selectedPaths.value.toList()
         if (paths.isEmpty()) return
         viewModelScope.launch {
-            trashManager.trashPhotos(paths)
+            if (trashPrefs.enabled.value) {
+                trashManager.trashPhotos(paths)
+            } else {
+                paths.forEach { relPath -> store.deletePhoto(relPath) }
+            }
             scanner.rescan()
             clearSelection()
             sendEvent(R.string.photo_deleted)

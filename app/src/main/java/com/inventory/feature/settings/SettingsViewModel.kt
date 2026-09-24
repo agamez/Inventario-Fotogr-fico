@@ -7,6 +7,7 @@ import com.inventory.R
 import com.inventory.ai.VisionClient
 import com.inventory.ai.VisionOutcome
 import com.inventory.ai.VisionPrefs
+import com.inventory.settings.TrashPrefs
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
@@ -29,6 +30,7 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val prefs: VisionPrefs,
+    private val trashPrefs: TrashPrefs,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -38,6 +40,7 @@ class SettingsViewModel @Inject constructor(
         val apiKey: String = "",
         val model: String = "",
         val outputLanguage: String = "",
+        val trashEnabled: Boolean = false,
         val testing: Boolean = false,
         val testResult: String? = null,
     )
@@ -55,17 +58,18 @@ class SettingsViewModel @Inject constructor(
         Fields(enabled, baseUrl, apiKey, model, outputLanguage)
     }
 
-    private val status = combine(_testing, _testResult) { testing, result ->
-        testing to result
+    private val status = combine(_testing, _testResult, trashPrefs.enabled) { testing, result, trashEnabled ->
+        Triple(testing, result, trashEnabled)
     }
 
-    val uiState: StateFlow<SettingsUiState> = combine(fields, status) { current, (testing, result) ->
+    val uiState: StateFlow<SettingsUiState> = combine(fields, status) { current, (testing, result, trashEnabled) ->
         SettingsUiState(
             enabled = current.enabled,
             baseUrl = current.baseUrl,
             apiKey = current.apiKey,
             model = current.model,
             outputLanguage = current.outputLanguage,
+            trashEnabled = trashEnabled,
             testing = testing,
             testResult = result,
         )
@@ -78,6 +82,7 @@ class SettingsViewModel @Inject constructor(
             apiKey = prefs.apiKey.value,
             model = prefs.model.value,
             outputLanguage = prefs.outputLanguage.value,
+            trashEnabled = trashPrefs.enabled.value,
         ),
     )
 
@@ -90,6 +95,8 @@ class SettingsViewModel @Inject constructor(
     fun setModel(value: String) = prefs.setModel(value)
 
     fun setOutputLanguage(value: String) = prefs.setOutputLanguage(value)
+
+    fun setTrashEnabled(value: Boolean) = trashPrefs.setEnabled(value)
 
     /** Probes the configured endpoint; no-op while a probe is already in flight. */
     fun testConnection() {

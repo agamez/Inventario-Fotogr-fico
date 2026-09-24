@@ -15,6 +15,7 @@ import com.inventory.storage.ExifEditor
 import com.inventory.storage.Filenames
 import com.inventory.storage.FileBackend
 import com.inventory.storage.StorageBackend
+import com.inventory.storage.TrashManager
 import com.inventory.storage.joinRel
 import com.inventory.storage.nameOf
 import com.inventory.storage.parentOf
@@ -61,6 +62,10 @@ class DesktopAppController(
 
     val backend: StorageBackend = FileBackend(root = rootDir, accessCheck = { true }, exif = exifEditor)
     val index = DesktopIndex(backend)
+
+    /** Soft-delete/undo over the same file backend the controller uses. */
+    val trashManager = TrashManager(backend)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var watcher: FolderWatcher? = null
 
@@ -73,6 +78,24 @@ class DesktopAppController(
     val conflictCount: StateFlow<Int> = index.snapshot
         .map { it.conflictCount }
         .stateIn(scope, SharingStarted.Eagerly, 0)
+
+    private val _trashEntries = MutableStateFlow<List<TrashManager.TrashEntry>>(emptyList())
+
+    /** The current trash listing, newest deletion first (mirrors Android). */
+    val trashEntries: StateFlow<List<TrashManager.TrashEntry>> = _trashEntries.asStateFlow()
+
+    init {
+        // Opportunistic purge at startup (fire-and-forget), but ONLY while
+        // the optional trash is enabled (off by default: deletions are
+        // permanent, so there is nothing to purge). Runs the 30-day and the
+        // 500 MB size-cap sweep together.
+        if (config.trashEnabled.value) {
+            scope.launch {
+                trashManager.purgeOlderThan(PURGE_DAYS)
+                trashManager.purgeOverSizeCap()
+            }
+        }
+    }
 
     private val _pendingQueue = MutableStateFlow<List<PendingPhoto>>(emptyList())
 
@@ -100,6 +123,9 @@ class DesktopAppController(
 
     /** The persisted AI auto-label settings, observed by the settings dialog. */
     val aiSettings: StateFlow<AiSettings> = config.aiSettings
+
+    /** Whether deletions move into `.trash`; observed by the settings dialog. */
+    val trashEnabled: StateFlow<Boolean> = config.trashEnabled
 
     /** Result of a mutating operation, mapped to user messages by the UI. */
     sealed interface Outcome {
@@ -277,10 +303,15 @@ class DesktopAppController(
         }
     }
 
-    /** Deletes the folder at [rel] with its whole subtree. */
+    /** Deletes the folder at [rel]: trashed when enabled, else permanent. */
     suspend fun deleteFolder(rel: String): Outcome = withContext(Dispatchers.IO) {
-        backend.deleteFolderRecursive(rel)
+        if (config.trashEnabled.value) {
+            trashManager.trashContainer(rel)
+        } else {
+            backend.deleteFolderRecursive(rel)
+        }
         index.rebuild()
+        _trashEntries.value = trashManager.listEntries()
         Outcome.Deleted
     }
 
@@ -432,10 +463,15 @@ class DesktopAppController(
         Outcome.Saved
     }
 
-    /** Deletes the photo at [rel]; a vanished photo is a no-op. */
+    /** Deletes the photo at [rel]: trashed when enabled, else permanent. */
     suspend fun deletePhoto(rel: String): Outcome = withContext(Dispatchers.IO) {
-        backend.deleteFile(rel)
+        if (config.trashEnabled.value) {
+            trashManager.trashPhotos(listOf(rel))
+        } else {
+            backend.deleteFile(rel)
+        }
         index.rebuild()
+        _trashEntries.value = trashManager.listEntries()
         Outcome.Deleted
     }
 
@@ -469,6 +505,38 @@ class DesktopAppController(
     /** The EXIF triple of one photo straight from disk (the edit dialog). */
     suspend fun readPhotoMeta(rel: String): com.inventory.storage.PhotoMeta? = backend.readPhotoMeta(rel)
 
+    // region trash (soft delete / undo)
+
+    /** Re-lists the trash from disk; the UI calls this when it opens the view. */
+    fun refreshTrash() {
+        scope.launch { _trashEntries.value = trashManager.listEntries() }
+    }
+
+    /** Puts the trashed entry [id] back and re-indexes the restored subtree. */
+    suspend fun restore(id: String): Boolean = withContext(Dispatchers.IO) {
+        val restored = trashManager.restore(id)
+        if (restored) {
+            index.rebuild()
+            _trashEntries.value = trashManager.listEntries()
+        }
+        restored
+    }
+
+    /** Permanently deletes the trashed entry [id]; returns the disk verdict. */
+    suspend fun deleteForever(id: String): Boolean = withContext(Dispatchers.IO) {
+        val deleted = trashManager.deleteForever(id)
+        _trashEntries.value = trashManager.listEntries()
+        deleted
+    }
+
+    /** Permanently deletes every trashed entry. */
+    suspend fun emptyTrash() = withContext(Dispatchers.IO) {
+        trashManager.listEntries().forEach { trashManager.deleteForever(it.id) }
+        _trashEntries.value = trashManager.listEntries()
+    }
+
+    // endregion
+
     // region ai auto-label
 
     /**
@@ -498,6 +566,9 @@ class DesktopAppController(
     fun setAiModel(value: String) = config.setAiModel(value)
 
     fun setAiOutputLanguage(value: String) = config.setAiOutputLanguage(value)
+
+    /** Persists the trash (soft-delete) master switch. */
+    fun setTrashEnabled(value: Boolean) = config.setTrashEnabled(value)
 
     /**
      * Probes the configured endpoint with a text-only ping, building the
@@ -541,6 +612,9 @@ class DesktopAppController(
     private companion object {
         /** Key-free reason for a "Test connection" with no model configured. */
         const val MODEL_NOT_CONFIGURED = "model not configured"
+
+        /** Trash entries older than this many days are purged at startup. */
+        const val PURGE_DAYS = 30
 
         /**
          * The language to instruct the model with: the trimmed user value,

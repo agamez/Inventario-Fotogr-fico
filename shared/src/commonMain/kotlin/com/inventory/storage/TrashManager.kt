@@ -35,8 +35,10 @@ import kotlinx.coroutines.withContext
  *
  * Restore moves the single child back to the recorded parent (collision-
  * suffixed by [Filenames]) and drops the stamp. [purgeOlderThan] deletes
- * stamp folders older than the cutoff; the app calls it opportunistically
- * at start. All I/O runs on [Dispatchers.IO].
+ * stamp folders older than the cutoff and [purgeOverSizeCap] drops the
+ * oldest entries while the tree exceeds a byte cap; the app runs both
+ * opportunistically at start when the trash is enabled. All I/O runs on
+ * [Dispatchers.IO].
  */
 class TrashManager(
     private val backend: StorageBackend,
@@ -153,7 +155,61 @@ class TrashManager(
         purged
     }
 
+    /**
+     * The total size in bytes of everything under `.trash` — every stamp
+     * folder, its whole subtree, nested covers and the `.origin` sidecars.
+     * Zero when the trash does not exist or cannot be reached.
+     */
+    suspend fun totalTrashBytes(): Long = withContext(Dispatchers.IO) {
+        if (!backend.exists(TRASH_DIR)) return@withContext 0L
+        var total = 0L
+        for (stamp in backend.listContainers(TRASH_DIR)) {
+            total += stampedBytes(stamp.relPath)
+        }
+        total
+    }
+
+    /**
+     * Permanently deletes the OLDEST entries (by deletion time) until
+     * [totalTrashBytes] is at or below [maxBytes]; returns how many stamps
+     * were dropped. The newest content survives a disk-space squeeze, so
+     * the cap complements [purgeOlderThan] without ever dropping fresh
+     * deletions while old ones remain. The app runs both when the trash is
+     * enabled.
+     */
+    suspend fun purgeOverSizeCap(maxBytes: Long = MAX_TRASH_BYTES): Int = withContext(Dispatchers.IO) {
+        var total = totalTrashBytes()
+        if (total <= maxBytes) return@withContext 0
+        var purged = 0
+        for (entry in listEntries().asReversed()) {
+            if (total <= maxBytes) break
+            val stampRel = joinRel(TRASH_DIR, entry.id)
+            val freed = stampedBytes(stampRel)
+            if (deleteForever(entry.id)) {
+                total -= freed
+                purged++
+            }
+        }
+        purged
+    }
+
     // region internals
+
+    /** Size of one stamp folder including its `.origin` sidecar. */
+    private suspend fun stampedBytes(stampRel: String): Long =
+        subtreeBytes(stampRel) +
+            (backend.lastModifiedAndSize(joinRel(stampRel, ORIGIN_FILE))?.second ?: 0L)
+
+    /** Recursive byte total of a folder's photos, covers and subfolders. */
+    private suspend fun subtreeBytes(rel: String): Long {
+        var total = 0L
+        if (backend.hasCover(rel)) {
+            total += backend.lastModifiedAndSize(joinRel(rel, COVER_FILE_NAME))?.second ?: 0L
+        }
+        for (photo in backend.listPhotos(rel)) total += photo.size
+        for (child in backend.listContainers(rel)) total += subtreeBytes(child.relPath)
+        return total
+    }
 
     /** Ensures `.trash` exists (without colliding itself into `.trash (2)`). */
     private suspend fun ensureTrashRoot() {
@@ -249,6 +305,9 @@ class TrashManager(
 
         /** [TrashEntry.kind] value of a trashed photo. */
         const val KIND_PHOTO = "photo"
+
+        /** Default cap on the whole `.trash` tree: 500 MB. */
+        const val MAX_TRASH_BYTES = 500L * 1024 * 1024
 
         private const val STAMP_PATTERN = "yyyyMMdd-HHmmss"
         private val STAMP_REGEX = Regex("""(\d{8}-\d{6})""")

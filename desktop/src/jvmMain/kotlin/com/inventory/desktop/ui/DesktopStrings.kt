@@ -93,9 +93,12 @@ object DesktopStrings {
     const val AI_SUGGESTION_READY = "AI suggestion ready"
     const val AI_SUGGESTION_FAILED = "AI suggestion failed"
 
-    // Delete confirmations
+    // Delete confirmations (mode-dependent: trash wording when the switch is
+    // on, the pre-trash permanent wording when it is off)
     const val DELETE_CONTAINER_TITLE = "Delete container?"
     const val DELETE_CONTAINER_MESSAGE =
+        "\"%s\" and everything inside it will be moved to the trash and auto-purged after 30 days."
+    const val DELETE_CONTAINER_MESSAGE_PERMANENT =
         "\"%s\" and its contents will be deleted from disk. This cannot be undone."
     const val DELETE_CONTAINS = "It holds %s and %s."
     const val CONTAINERS_COUNTED = "%d containers"
@@ -104,7 +107,31 @@ object DesktopStrings {
     const val PHOTO_COUNTED_ONE = "%d photo"
     const val COUNT_SEPARATOR = " · "
     const val DELETE_PHOTO_TITLE = "Delete photo?"
-    const val DELETE_PHOTO_MESSAGE = "\"%s\" will be deleted from disk. This cannot be undone."
+    const val DELETE_PHOTO_MESSAGE = "\"%s\" will be moved to the trash."
+    const val DELETE_PHOTO_MESSAGE_PERMANENT =
+        "\"%s\" will be deleted from disk. This cannot be undone."
+
+    // Trash setting (settings dialog) — mirrors Android's trash_enable*
+    const val TRASH_ENABLE = "Move deleted items to trash"
+    const val TRASH_ENABLE_HELP =
+        "When off, deletions are permanent. When on, deleted items are kept in .trash for 30 days or until the trash exceeds 500 MB."
+
+    // Trash view (soft delete / undo) — wording mirrors Android's trash_* resources
+    const val TRASH = "Trash"
+    const val TRASH_TITLE = "Trash"
+    const val TRASH_EMPTY = "Trash is empty"
+    const val RESTORE = "Restore"
+    const val DELETE_FOREVER = "Delete forever"
+    const val EMPTY_TRASH = "Empty trash"
+    const val TRASH_WAS_IN = "Was in %s"
+    const val TRASH_DELETED_ON = "Deleted %s"
+    const val TRASH_KIND_CONTAINER = "Container"
+    const val TRASH_KIND_PHOTO = "Photo"
+    const val DELETE_FOREVER_CONFIRM = "Permanently delete \"%s\"? This cannot be undone."
+    const val EMPTY_TRASH_CONFIRM = "Permanently delete every trash entry? This cannot be undone."
+    const val MSG_TRASH_RESTORED = "Restored"
+    const val MSG_TRASH_PURGED = "Deleted forever"
+    const val MSG_TRASH_EMPTIED = "Trash emptied"
 
     // Conflict banner
     const val CONFLICT_BANNER_ONE = "1 sync-conflicted file — resolve it with a file manager, then rescan."
