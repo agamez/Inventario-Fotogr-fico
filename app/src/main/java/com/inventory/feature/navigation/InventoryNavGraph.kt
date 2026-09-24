@@ -58,6 +58,23 @@ fun InventoryNavGraph(
 ) {
     val dragController = remember { DragController() }
 
+    // Breadcrumb jumps: an ancestor's relative path becomes a container
+    // route with the back stack cleaned back to the root; the root segment
+    // ("" relative path) has its own destination instead of a container
+    // route, so tapping "Inventory" lands on the home screen.
+    val navigateToAncestor: (String) -> Unit = { relPath ->
+        if (relPath.isEmpty()) {
+            navController.navigate(Screens.Inventory.route) {
+                popUpTo(Screens.Inventory.route) { inclusive = false }
+                launchSingleTop = true
+            }
+        } else {
+            navController.navigate(Screens.buildContainerRoute(relPath)) {
+                popUpTo(Screens.Inventory.route)
+            }
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -93,6 +110,7 @@ fun InventoryNavGraph(
                     onOpenContainer = { relPath ->
                         navController.navigate(Screens.buildContainerRoute(relPath))
                     },
+                    onNavigateToFolder = navigateToAncestor,
                     onOpenCamera = { relPath ->
                         navController.navigate(Screens.buildCameraRoute(relPath))
                     },
@@ -144,6 +162,7 @@ fun InventoryNavGraph(
                     onOpenContainer = { relPath ->
                         navController.navigate(Screens.buildContainerRoute(relPath))
                     },
+                    onNavigateToFolder = navigateToAncestor,
                     onOpenCamera = { relPath -> navController.navigate(Screens.buildCameraRoute(relPath)) },
                     onOpenCoverCapture = { relPath ->
                         navController.navigate(Screens.buildCoverRoute(relPath))

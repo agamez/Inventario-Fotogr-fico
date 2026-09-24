@@ -111,8 +111,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -129,6 +132,7 @@ import com.inventory.cache.ChildCounts
 import com.inventory.feature.containers.drag.DragController
 import com.inventory.feature.containers.drag.DragKind
 import com.inventory.feature.containers.drag.DragPayload
+import com.inventory.nav.breadcrumbSegments
 import com.inventory.storage.StorageMode
 import com.inventory.ui.rememberBackendModel
 import com.inventory.ui.rememberPreviewBitmap
@@ -204,7 +208,8 @@ private val DropHighlightColor = Color(0xFF009688)
  * picked SAF tree and over direct file access.
  *
  * Navigation is owned by the caller: [onOpenContainer] descends into a
- * child folder, [onOpenCamera] and the gallery picker attach photos to
+ * child folder, [onNavigateToFolder] jumps to an ancestor picked from the
+ * app-bar breadcrumb, [onOpenCamera] and the gallery picker attach photos to
  * this folder, [onOpenCoverCapture] photographs a cover for the addressed
  * folder (relative-path arguments), [onOpenSearch] opens the global
  * search, [onOpenSettings] opens the AI auto-labeling settings (root menu
@@ -215,6 +220,7 @@ private val DropHighlightColor = Color(0xFF009688)
 @Composable
 fun ContainerScreen(
     onOpenContainer: (String) -> Unit,
+    onNavigateToFolder: (String) -> Unit,
     onOpenCamera: (String) -> Unit,
     onOpenCoverCapture: (String) -> Unit,
     onOpenSearch: () -> Unit,
@@ -519,15 +525,20 @@ fun ContainerScreen(
                 } else {
                     TopAppBar(
                         title = {
-                            Text(
-                                text = if (isRoot) {
-                                    stringResource(R.string.title_inventory)
-                                } else {
-                                    uiState.containerName.ifEmpty {
+                            when {
+                                isRoot -> Text(stringResource(R.string.title_inventory))
+                                // During a drag the ancestor chips below take
+                                // over navigation; the breadcrumb steps aside.
+                                dragController.payload != null -> Text(
+                                    text = uiState.containerName.ifEmpty {
                                         stringResource(R.string.container_fallback_title)
-                                    }
-                                },
-                            )
+                                    },
+                                )
+                                else -> BreadcrumbRow(
+                                    folderRel = folderRel,
+                                    onNavigate = onNavigateToFolder,
+                                )
+                            }
                         },
                         navigationIcon = {
                             if (!isRoot) {
@@ -1613,6 +1624,86 @@ private fun MoveUpChip(
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
         )
+    }
+}
+
+/**
+ * The app-bar breadcrumb: a horizontally scrollable row with one text
+ * segment per ancestor of [folderRel], root first ("Inventory"), separated
+ * by " / ". Every ancestor segment is clickable and navigates through
+ * [onNavigate]; the current (last) segment is bold and not clickable. Only
+ * shown for a non-root folder while no drag is in flight.
+ *
+ * The row is scrolled to its end (the current folder) whenever the folder
+ * changes, so a deep path never hides the screen's own name. The root
+ * segment is exposed to accessibility by description rather than as a
+ * second "Inventory" text node, keeping the app-bar title the single
+ * textual root marker.
+ */
+@Composable
+private fun BreadcrumbRow(
+    folderRel: String,
+    onNavigate: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val rootLabel = stringResource(R.string.title_inventory)
+    val segments = remember(folderRel, rootLabel) { breadcrumbSegments(folderRel, rootLabel) }
+    val scrollState = rememberScrollState()
+    LaunchedEffect(folderRel) {
+        // Let the row lay out, then reveal the tail of the path.
+        withFrameNanos { }
+        scrollState.scrollTo(scrollState.maxValue)
+    }
+    Row(
+        modifier = modifier.horizontalScroll(scrollState),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        segments.forEachIndexed { index, segment ->
+            if (index > 0) {
+                Text(
+                    text = " / ",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+            Text(
+                text = segment.label,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = if (segment.isCurrent) FontWeight.Bold else FontWeight.Normal,
+                color = if (segment.isCurrent) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .then(
+                        if (segment.isCurrent) {
+                            Modifier
+                        } else {
+                            Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable { onNavigate(segment.rel) }
+                        },
+                    )
+                    .padding(horizontal = 2.dp)
+                    .then(
+                        if (segment.rel.isEmpty()) {
+                            Modifier.clearAndSetSemantics {
+                                contentDescription = rootLabel
+                                onClick(label = rootLabel) {
+                                    onNavigate(segment.rel)
+                                    true
+                                }
+                            }
+                        } else {
+                            Modifier
+                        },
+                    ),
+            )
+        }
     }
 }
 

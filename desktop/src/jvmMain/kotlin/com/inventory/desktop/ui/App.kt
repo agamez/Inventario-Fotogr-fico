@@ -86,11 +86,13 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.inventory.desktop.DesktopAppController
 import com.inventory.desktop.index.DesktopIndex
+import com.inventory.nav.breadcrumbSegments
 import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -311,6 +313,7 @@ fun App(controller: DesktopAppController) {
         Column(modifier = Modifier.fillMaxSize()) {
             TopBar(
                 folderRel = folderRel,
+                onNavigateToFolder = { selectedFolder = it.ifEmpty { null } },
                 scanning = scanning,
                 showGlobalSearch = showGlobalSearch,
                 showTrash = showTrash,
@@ -629,6 +632,7 @@ fun App(controller: DesktopAppController) {
 @Composable
 private fun TopBar(
     folderRel: String,
+    onNavigateToFolder: (String) -> Unit,
     scanning: Boolean,
     showGlobalSearch: Boolean,
     showTrash: Boolean,
@@ -656,14 +660,13 @@ private fun TopBar(
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.width(12.dp))
-            Text(
-                text = breadcrumbOf(folderRel),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
+            if (folderRel.isNotEmpty()) {
+                BreadcrumbRow(
+                    folderRel = folderRel,
+                    onNavigate = onNavigateToFolder,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
+            }
             Spacer(Modifier.weight(1f))
             if (scanning) {
                 Text(
@@ -1348,9 +1351,57 @@ private fun rememberPhotoFile(controller: DesktopAppController, photo: DesktopIn
         value = controller.photoFile(photo.relPath)
     }.value
 
-/** "Estate/Storage unit/Shelf A" → "Estate / Storage unit / Shelf A". */
-private fun breadcrumbOf(folderRel: String): String =
-    folderRel.split('/').filter(String::isNotBlank).joinToString(" / ")
+/**
+ * The app-bar breadcrumb: a horizontally scrollable row with one text
+ * segment per ancestor of [folderRel], root first ("Inventory"), separated
+ * by " / ". Every ancestor segment is clickable and navigates through
+ * [onNavigate]; the current (last) segment is bold and not clickable.
+ */
+@Composable
+private fun BreadcrumbRow(
+    folderRel: String,
+    onNavigate: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val segments = remember(folderRel) {
+        breadcrumbSegments(folderRel, DesktopStrings.TITLE_INVENTORY)
+    }
+    Row(
+        modifier = modifier.horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        segments.forEachIndexed { index, segment ->
+            if (index > 0) {
+                Text(
+                    text = " / ",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+            Text(
+                text = segment.label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (segment.isCurrent) FontWeight.Bold else FontWeight.Normal,
+                color = if (segment.isCurrent) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = if (segment.isCurrent) {
+                    Modifier.padding(horizontal = 2.dp)
+                } else {
+                    Modifier
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable { onNavigate(segment.rel) }
+                        .padding(horizontal = 2.dp)
+                },
+            )
+        }
+    }
+}
 
 private fun parentRelOf(rel: String): String? =
     rel.substringBeforeLast('/', "").takeIf { it.isNotEmpty() }
