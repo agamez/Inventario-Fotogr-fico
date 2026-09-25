@@ -170,6 +170,9 @@
     <string name="report_generating">Generating report…</string>
     <string name="report_written">Report written to %1$s</string>
     <string name="report_export_failed">Report export failed</string>
+    <!-- Outbound report share (system share sheet after a successful export) -->
+    <string name="share_report_chooser">Send report via</string>
+    <string name="report_share_subject">Photo Inventory report</string>
 
     <!-- Inbound image share (ACTION_SEND/SEND_MULTIPLE) -->
     <string name="share_target_title">Add to Photo Inventory</string>

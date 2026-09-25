@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The only location FileProvider exposes: the staged report copies under
+     cacheDir/reports (see ReportSharing). Everything else (the inventory
+     tree, other cache entries) stays private to the app. -->
+<paths>
+    <cache-path name="reports" path="reports/" />
+</paths>

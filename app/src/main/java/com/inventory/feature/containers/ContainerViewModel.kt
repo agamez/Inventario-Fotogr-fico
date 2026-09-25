@@ -16,6 +16,7 @@ import com.inventory.cache.CacheEntry
 import com.inventory.cache.ChildCounts
 import com.inventory.cache.InventoryScanner
 import com.inventory.settings.TrashPrefs
+import com.inventory.share.ReportSharing
 import com.inventory.share.SharedImage
 import com.inventory.storage.DuplicateGuard
 import com.inventory.storage.Filenames
@@ -25,6 +26,8 @@ import com.inventory.storage.StorageMode
 import com.inventory.storage.TrashManager
 import com.inventory.ui.UserMessageBus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +47,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Presents one folder of the filesystem inventory — the storage root
@@ -70,6 +74,7 @@ import kotlinx.coroutines.launch
 @HiltViewModel
 class ContainerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
+    @ApplicationContext private val context: Context,
     private val store: InventoryStore,
     private val dao: CacheDao,
     private val scanner: InventoryScanner,
@@ -355,6 +360,12 @@ class ContainerViewModel @Inject constructor(
 
         /** The folder on screen was renamed/moved/deleted: ascend to its parent. */
         data object PopBackStack : ContainerEvent
+
+        /**
+         * The generated HTML report was staged into the cache at [file]:
+         * the screen hands it to the system share sheet.
+         */
+        data class ShareReport(val file: File) : ContainerEvent
     }
 
     private val _events = Channel<ContainerEvent>(Channel.BUFFERED)
@@ -410,10 +421,13 @@ class ContainerViewModel @Inject constructor(
     /**
      * Overflow "Export report" (root only): builds `inventory-report.html`
      * and `inventory-report.csv` into the inventory root through the shared
-     * [InventoryReportGenerator] and confirms with the report path. The
-     * generator does its I/O (and thumbnailing) on [Dispatchers.IO] itself;
-     * [reportGenerating] drives an indeterminate progress indicator while it
-     * runs, and a write failure is reported without crashing the screen.
+     * [InventoryReportGenerator] and confirms with the report path. On a
+     * successful write the HTML is read back, staged into the app cache and
+     * announced as [ContainerEvent.ShareReport] so the screen can open the
+     * system share sheet. The generator does its I/O (and thumbnailing) on
+     * [Dispatchers.IO] itself; [reportGenerating] drives an indeterminate
+     * progress indicator while it runs, and a write failure is reported
+     * without crashing the screen.
      */
     fun exportReport() {
         viewModelScope.launch {
@@ -421,6 +435,11 @@ class ContainerViewModel @Inject constructor(
             try {
                 val files = reportGenerator.generate()
                 sendEvent(R.string.report_written, listOf(files.htmlRelPath))
+                val html = store.readPhotoBytes(files.htmlRelPath)
+                val staged = html?.takeIf { it.isNotEmpty() }?.let { bytes ->
+                    withContext(Dispatchers.IO) { ReportSharing.stage(context, bytes) }
+                }
+                if (staged != null) _events.send(ContainerEvent.ShareReport(staged))
             } catch (exception: java.io.IOException) {
                 sendEvent(R.string.report_export_failed)
             } finally {

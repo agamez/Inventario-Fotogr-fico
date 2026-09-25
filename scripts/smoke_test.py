@@ -87,6 +87,10 @@ EXPORT_REPORT_LABEL = "Export report"                   # export_report
 REPORT_WRITTEN = "Report written to"                    # report_written prefix
 REPORT_HTML = "inventory-report.html"                   # InventoryReportGenerator
 REPORT_CSV = "inventory-report.csv"
+REPORT_SHARE_CHOOSER = "Send report via"                # share_report_chooser
+REPORT_CACHE_DIR = "cache/reports"                      # ReportSharing.CACHE_DIR
+REPORT_STAGED_PREFIX = "photo-inventory-"               # staged cache file prefix
+RESOLVER_PKG = "com.android.intentresolver"             # system share sheet
 # The viewer's top-strip indicator: viewer_page = "%1$d / %2$d".
 VIEWER_PAGE_RE = re.compile(r"^(\d+) / (\d+)$")
 MOCK_PORT = 8765
@@ -478,6 +482,22 @@ def wait_absent(text, timeout=10):
         if d is not None and not find_all(d, text=text): return True
         if time.time() >= end: return False
         time.sleep(0.5)
+
+def wait_share_chooser(timeout=15):
+    """Wait for the outbound report share sheet. Newer Android replaces the
+    `Intent.createChooser` title with the system "Sharing N file" header, so
+    accept any of: the `share_report_chooser` title, the intent-resolver
+    sheet itself, or the staged file name the resolver previews."""
+    end = time.time() + timeout
+    while time.time() < end:
+        d = dump()
+        if d is not None:
+            if find_all(d, text=REPORT_SHARE_CHOOSER): return True
+            if find_all(d, text=REPORT_STAGED_PREFIX): return True
+            if any(n.get("package") == RESOLVER_PKG for n in d.iter()): return True
+        time.sleep(0.4)
+    return False
+
 
 def texts_exact(needle):
     """Nodes whose text attribute equals needle exactly (guards against the
@@ -2419,6 +2439,20 @@ def t_report():
     csvp = fp(REPORT_CSV)
     check("disk: inventory-report.html written", fs_exists(html))
     check("disk: inventory-report.csv written", fs_exists(csvp))
+    # The successful write also stages an HTML copy in the app cache and opens
+    # the system share sheet. Capture the chooser, dismiss it, then verify the
+    # staged copy is present, non-empty and the ONLY one (clear-before-stage).
+    check("report share chooser appears", wait_share_chooser(),
+          "no 'Send report via' title, resolver sheet or staged file name")
+    back(); time.sleep(1.0)
+    listing = sh(f"run-as {PKG} ls -la {REPORT_CACHE_DIR} 2>/dev/null")
+    staged = [line for line in listing.splitlines()
+              if REPORT_STAGED_PREFIX in line and line.endswith(".html")]
+    check("report staged a cache HTML", len(staged) == 1, listing)
+    staged_size = int(staged[0].split()[4]) if staged else 0
+    check("staged cache HTML is non-empty", staged_size > 0, listing)
+    check("exactly one staged report file",
+          listing.count(REPORT_STAGED_PREFIX) == 1, listing)
     # pull both and assert the exact markup / CSV on the host
     fdh, local_html = tempfile.mkstemp(suffix=".html"); os.close(fdh)
     fdc, local_csv = tempfile.mkstemp(suffix=".csv"); os.close(fdc)

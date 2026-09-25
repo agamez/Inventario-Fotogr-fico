@@ -174,6 +174,9 @@ fun App(controller: DesktopAppController) {
     // the single-photo confirm reached from the keyboard focus cursor.
     var confirmDeleteSelection by remember { mutableStateOf(false) }
     var gridDeleteRel by remember { mutableStateOf<String?>(null) }
+    // Absolute path of the just-generated report whose completion dialog is
+    // open (null while no dialog is shown).
+    var reportGeneratedPath by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(message) {
         if (message != null) {
@@ -514,11 +517,12 @@ fun App(controller: DesktopAppController) {
                 onOpenSettings = { showSettings = true },
                 onExportReport = {
                     scope.launch {
-                        message = try {
+                        try {
                             val files = controller.exportReport()
-                            DesktopStrings.REPORT_WRITTEN.format(files.htmlRelPath)
+                            reportGeneratedPath =
+                                File(controller.rootDir, files.htmlRelPath).absolutePath
                         } catch (exception: java.io.IOException) {
-                            DesktopStrings.REPORT_EXPORT_FAILED
+                            message = DesktopStrings.REPORT_EXPORT_FAILED
                         }
                     }
                 },
@@ -943,6 +947,22 @@ fun App(controller: DesktopAppController) {
             SettingsDialog(
                 controller = controller,
                 onDismiss = { showSettings = false },
+            )
+        }
+
+        // Report completion: the desktop twin of Android's outbound share.
+        // There is no system share sheet on Linux, so the dialog offers to
+        // hand the generated HTML to the platform opener instead.
+        reportGeneratedPath?.let { path ->
+            ReportGeneratedDialog(
+                path = path,
+                onOpen = {
+                    reportGeneratedPath = null
+                    if (!controller.openReport(path)) {
+                        message = DesktopStrings.REPORT_OPEN_FAILED
+                    }
+                },
+                onClose = { reportGeneratedPath = null },
             )
         }
 

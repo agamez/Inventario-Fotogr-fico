@@ -48,6 +48,18 @@
                 <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
+        <!-- Outbound report share: the generated HTML is staged into the app
+             cache and handed to the system share sheet through this provider
+             (the cache is the only place another app may read). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

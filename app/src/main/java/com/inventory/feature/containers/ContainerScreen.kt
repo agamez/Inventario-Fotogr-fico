@@ -133,6 +133,7 @@ import com.inventory.feature.containers.drag.DragController
 import com.inventory.feature.containers.drag.DragKind
 import com.inventory.feature.containers.drag.DragPayload
 import com.inventory.nav.breadcrumbSegments
+import com.inventory.share.ReportSharing
 import com.inventory.share.ShareReceiver
 import com.inventory.storage.StorageMode
 import com.inventory.ui.rememberBackendModel
@@ -458,6 +459,10 @@ fun ContainerScreen(
                     context.getString(event.resId, *event.formatArgs.toTypedArray()),
                 )
                 ContainerViewModel.ContainerEvent.PopBackStack -> onBack()
+                is ContainerViewModel.ContainerEvent.ShareReport ->
+                    runCatching {
+                        context.startActivity(ReportSharing.chooser(context, event.file))
+                    }
             }
         }
     }

@@ -157,6 +157,31 @@ fun ConfirmDialog(
 }
 
 /**
+ * Completion dialog for a generated inventory report: the absolute file
+ * path plus an "Open report" action that hands it to the platform opener
+ * (xdg-open) and Close. The desktop equivalent of Android's post-export
+ * system share sheet — Linux has no such sheet.
+ */
+@Composable
+fun ReportGeneratedDialog(
+    path: String,
+    onOpen: () -> Unit,
+    onClose: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text(DesktopStrings.REPORT_GENERATED_TITLE) },
+        text = { Text(path) },
+        confirmButton = {
+            TextButton(onClick = onOpen) { Text(DesktopStrings.REPORT_OPEN) }
+        },
+        dismissButton = {
+            TextButton(onClick = onClose) { Text(DesktopStrings.REPORT_CLOSE) }
+        },
+    )
+}
+
+/**
  * The photo editor: preview, the EXIF description/note (description is
  * the file's name on disk — saving a changed one renames via the
  * controller), plus delete / move-to / close, mirroring the Android

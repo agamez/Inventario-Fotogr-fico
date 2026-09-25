@@ -69,6 +69,12 @@ class DesktopAppController(
     private val hasher: ImageHasher = ImageIoImageHasher(),
     /** Downscales + orientation-corrects each photo into a report thumbnail. */
     private val thumbnailer: ImageThumbnailer = ImageIoImageThumbnailer(),
+    /**
+     * Builds the process argv that [openReport] runs to hand a generated
+     * report to the desktop's file handler. `xdg-open` by default; injectable
+     * so tests can assert the command shape without spawning a real browser.
+     */
+    private val openCommand: (String) -> List<String> = { path -> listOf("xdg-open", path) },
 ) {
 
     val backend: StorageBackend = FileBackend(root = rootDir, accessCheck = { true }, exif = exifEditor)
@@ -817,6 +823,19 @@ class DesktopAppController(
             _reportGenerating.value = false
         }
     }
+
+    /**
+     * Hands the generated report at [absolutePath] to the platform opener
+     * ([openCommand], `xdg-open` by default). Returns false when the process
+     * cannot be started or exits non-zero, so the UI can show
+     * [com.inventory.desktop.ui.DesktopStrings.REPORT_OPEN_FAILED].
+     */
+    fun openReport(absolutePath: String): Boolean = runCatching {
+        ProcessBuilder(openCommand(absolutePath)).start().waitFor() == 0
+    }.getOrDefault(false)
+
+    /** The argv [openReport] runs for [absolutePath] (the test seam). */
+    fun reportOpenCommand(absolutePath: String): List<String> = openCommand(absolutePath)
 
     // endregion
 
