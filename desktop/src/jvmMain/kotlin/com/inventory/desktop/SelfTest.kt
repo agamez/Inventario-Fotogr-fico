@@ -316,7 +316,13 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
 
     // 16. Report export: the shared generator writes both documents into the
     //     inventory root; the UI confirms with the HTML path. Content markers
-    //     prove the tree was walked, paths URL-encoded and EXIF read.
+    //     prove the tree was walked, paths URL-encoded and EXIF read. A
+    //     container cover is set first so its embedded header image is
+    //     asserted too (and proven to stay out of the content grid).
+    report.check(
+        "container cover set for the report",
+        controller.setCover("AI", syntheticJpeg()) == DesktopAppController.Outcome.Saved,
+    )
     val exported = controller.exportReport()
     val reportHtml = File(folder, exported.htmlRelPath)
     val reportCsv = File(folder, exported.csvRelPath)
@@ -332,6 +338,17 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
         "report HTML embeds base64 thumbnails",
         htmlText.contains("data:image/jpeg;base64,"),
         htmlText.take(200),
+    )
+    report.check(
+        "report HTML embeds the container cover in its section header",
+        htmlText.contains("<img class=\"cover\" src=\"data:image/jpeg;base64,") &&
+            htmlText.contains("alt=\"AI\">"),
+        htmlText,
+    )
+    report.check(
+        "report HTML keeps the cover out of the photo grid",
+        !htmlText.contains("_cover.jpg"),
+        htmlText,
     )
     report.check(
         "report HTML URL-encodes the original photo links",

@@ -19,8 +19,9 @@ import org.junit.rules.TemporaryFolder
  * predictable). Covers the two documents landing in the inventory root, the
  * summary totals / date range, the tree outline anchors, the flat per-
  * container sections, embedded `data:image/jpeg;base64,` thumbnails (plus the
- * placeholder for an undecodable photo), the deterministic ordering, the HTML
- * escaping / per-segment URL-encoding of the original-photo links, the
+ * placeholder for an undecodable photo), the embedded container-cover header
+ * image (omitted when absent or undecodable), the deterministic ordering, the
+ * HTML escaping / per-segment URL-encoding of the original-photo links, the
  * filename fallback for an absent EXIF description, and the RFC-4180 CSV
  * columns + quoting that survive a comma, quote and newline round-trip.
  */
@@ -131,9 +132,22 @@ class InventoryReportGeneratorTest {
         assertTrue(html.contains("<h2>Shelf A</h2>"), html)
         assertTrue(html.contains("<p class=\"path\">Building/Storage unit/Shelf A</p>"), html)
 
-        // 5. Cover keeps a relative, URL-encoded path; photo originals are
-        // linked (but their previews are embedded, so no `src=` original path).
-        assertTrue(html.contains("src=\"Building/Storage%20unit/_cover.jpg\""), html)
+        // 5. The container's cover is EMBEDDED in the section header (a data
+        // URI whose alt is the container name) so a shared/standalone report
+        // still shows it; it never reappears as a content photo. Photo
+        // originals are linked (their previews are embedded, so no `src=`
+        // original path).
+        assertTrue(
+            html.contains(
+                "<img class=\"cover\" src=\"data:image/jpeg;base64,${FakeThumbnailer.THUMB_BASE64}\" " +
+                    "alt=\"Storage unit\">",
+            ),
+            html,
+        )
+        assertFalse(html.contains("_cover.jpg"), "cover leaked into the report body:\n$html")
+        // Containers without a cover (Building, Shelf A) render no cover img:
+        // only the one covered container contributes a `class="cover"` tag.
+        assertEquals(1, Regex("class=\"cover\"").findAll(html).count(), html)
         assertTrue(
             html.contains("href=\"Building/Storage%20unit/Shelf%20A/Widget%201.jpg\""),
             html,
@@ -197,6 +211,35 @@ class InventoryReportGeneratorTest {
         assertEquals(oddDescription, odd[2])
         assertEquals(oddNote, odd[3])
         assertEquals("", odd[4])
+    }
+
+    /**
+     * A cover that cannot be decoded is omitted (no `<img>` at all), and a
+     * container without a cover renders none either — in both cases the
+     * report is still generated successfully.
+     */
+    @Test
+    fun undecodableOrAbsentCoverRendersNoImageAndGenerationStillSucceeds() = runTest {
+        val backend = backend()
+        backend.createFolder("", "Has broken cover")
+        backend.createFolder("", "Has no cover")
+        backend.setCover("Has broken cover", FakeExif.jpeg("Unrenderable", null))
+        backend.writePhotoBytes("Has no cover/Photo.jpg", FakeExif.jpeg("A photo", null))
+
+        val files = InventoryReportGenerator(backend, FakeThumbnailer()).generate()
+        val htmlFile = File(backend.root, files.htmlRelPath)
+
+        assertTrue(htmlFile.isFile, "generation must still succeed")
+        assertTrue(File(backend.root, files.csvRelPath).isFile, "CSV must still be written")
+        val html = htmlFile.readText()
+        assertTrue(html.contains("<h2>Has broken cover</h2>"), html)
+        assertTrue(html.contains("<h2>Has no cover</h2>"), html)
+        assertFalse(html.contains("class=\"cover\""), "no cover img expected:\n$html")
+        assertFalse(html.contains("_cover.jpg"), html)
+        assertTrue(
+            html.contains("data:image/jpeg;base64,${FakeThumbnailer.THUMB_BASE64}"),
+            "the content photo thumbnail should still be embedded:\n$html",
+        )
     }
 
     /** Minimal RFC-4180 reader for the test's own assertions. */

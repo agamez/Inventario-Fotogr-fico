@@ -15,9 +15,12 @@ import kotlinx.coroutines.withContext
  * - `inventory-report.html` — a single, printable, dependency-free file:
  *   a summary header (root name, timestamp, totals, photo date range), a
  *   tree outline with anchor links, and one flat section per container
- *   (document order = tree order) holding a photo grid whose thumbnails
- *   are base64-embedded JPEGs ([ImageThumbnailer]) — so the page renders
- *   with no sibling files at all.
+ *   (document order = tree order). Each section header shows the
+ *   container's `_cover.jpg` (when present) as a base64-embedded preview
+ *   next to the name, and the body holds a photo grid whose thumbnails are
+ *   base64-embedded JPEGs ([ImageThumbnailer]) — so the page renders with
+ *   no sibling files at all. The cover is the container's identity and
+ *   stays out of the content grid.
  * - `inventory-report.csv` — a flat spreadsheet twin, one row per photo:
  *   `containerPath,fileName,description,note,dateTaken,sizeBytes`
  *   (RFC-4180 quoting, UTF-8, no BOM). `dateTaken` keeps the EXIF
@@ -92,6 +95,8 @@ class InventoryReportGenerator(
         /** 0 for the root, then one deeper per nesting level. */
         val depth: Int,
         val hasCover: Boolean,
+        /** Embedded cover preview (the header image), or null when absent/undecodable. */
+        val coverThumbnail: ByteArray?,
         val photos: List<ReportPhoto>,
         val children: List<ReportContainer>,
     )
@@ -104,15 +109,29 @@ class InventoryReportGenerator(
         val children = backend.listContainers(relPath)
             .sortedBy { it.name.lowercase(Locale.ROOT) }
             .map { walk(it.relPath, depth + 1) }
+        val hasCover = backend.hasCover(relPath)
         return ReportContainer(
             relPath = relPath,
             name = if (relPath.isEmpty()) ROOT_LABEL else nameOf(relPath),
             depth = depth,
-            hasCover = backend.hasCover(relPath),
+            hasCover = hasCover,
+            coverThumbnail = if (hasCover) readCoverThumbnail(relPath) else null,
             photos = photos,
             children = children,
         )
     }
+
+    /**
+     * The container's `_cover.jpg` as the same embedded preview the photo
+     * grid uses, or null when it cannot be decoded. The cover is never a
+     * content photo (the listings exclude it), so this is its only render
+     * site — next to the container name.
+     */
+    private suspend fun readCoverThumbnail(relPath: String): ByteArray? =
+        backend.readPhotoBytes(joinRel(relPath, COVER_FILE_NAME))?.let { bytes ->
+            runCatching { thumbnailer.thumbnail(bytes, ImageThumbnailer.THUMBNAIL_MAX_DIM) }
+                .getOrNull()
+        }
 
     /**
      * The report row of one photo: EXIF triple with the app's filename
@@ -250,16 +269,18 @@ class InventoryReportGenerator(
         val sb = StringBuilder()
         sb.append("<section class=\"container depth-").append(container.depth)
             .append("\" id=\"").append(id).append("\">\n")
+        sb.append("<div class=\"section-head\">\n")
+        val cover = container.coverThumbnail
+        if (cover != null) {
+            sb.append("<img class=\"cover\" src=\"data:image/jpeg;base64,").append(base64(cover))
+                .append("\" alt=\"").append(htmlEscape(container.name)).append("\">\n")
+        }
         sb.append("<h2>").append(htmlEscape(container.name)).append("</h2>\n")
+        sb.append("</div>\n")
         sb.append("<p class=\"path\">")
             .append(htmlEscape(container.relPath.ifEmpty { ROOT_LABEL }))
             .append("</p>\n")
         sb.append("<p class=\"count\">").append(photoCountLabel(container.photos.size)).append("</p>\n")
-        if (container.hasCover) {
-            val cover = urlPath(joinRel(container.relPath, COVER_FILE_NAME))
-            sb.append("<img class=\"cover\" src=\"").append(htmlEscape(cover))
-                .append("\" alt=\"").append(htmlEscape(container.name)).append(" cover\">\n")
-        }
         sb.append(renderGrid(container.photos))
         sb.append("</section>\n")
         return sb.toString()
@@ -439,7 +460,8 @@ h1 { font-size: 1.9rem; margin: 0 0 4px; }
 .outline li { margin: 2px 0; }
 .outline .count { color: #666; font-size: 0.8rem; }
 section.container { margin: 0 0 28px; padding: 0 0 8px; border-bottom: 1px solid #e5e5e5; }
-section.container > h2 { font-size: 1.25rem; margin: 0 0 2px; word-break: break-word; }
+.section-head { display: flex; align-items: flex-start; gap: 12px; margin: 0 0 2px; }
+.section-head h2 { font-size: 1.25rem; margin: 0; word-break: break-word; }
 section.container .path { color: #666; font-size: 0.8rem; margin: 0 0 2px; word-break: break-word; }
 section.container .count { color: #666; font-size: 0.8rem; margin: 0 0 12px; }
 section.container.depth-1 { margin-left: 20px; }
@@ -456,7 +478,7 @@ figcaption .desc { font-weight: 600; word-break: break-word; }
 figcaption .note { color: #444; word-break: break-word; }
 figcaption .date { color: #666; }
 figcaption .file { color: #888; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.75rem; }
-img.cover { max-width: 220px; height: auto; display: block; margin: 0 0 12px; border-radius: 6px; border: 1px solid #e5e5e5; }
+img.cover { max-width: 128px; height: auto; display: block; flex: 0 0 auto; border-radius: 6px; border: 1px solid #e5e5e5; }
 a { color: #1155cc; text-decoration: none; }
 a:hover { text-decoration: underline; }
 .empty { color: #888; font-style: italic; margin: 0 0 12px; }

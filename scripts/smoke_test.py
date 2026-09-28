@@ -2430,6 +2430,11 @@ def t_report():
     sh(f"mkdir -p {sq(fp('Reportable'))}")
     seed_photo(seed, "Report <b>bold</b>, comma", date="2026:05:04 08:00:00")
     check("disk: seeded report photo", fs_exists(fp(seed)))
+    # A container cover (the folder's identity) is embedded in the section
+    # header, never listed as a content photo; seed one so the report proves it.
+    cover = "Reportable/_cover.jpg"
+    sh(f"cp {sq(fp(seed))} {sq(fp(cover))}")
+    check("disk: seeded report cover", fs_exists(fp(cover)))
     check("rescan adopts Reportable", rescan_from_root())
     check("UI lists the Reportable container", wait_for(text="Reportable", timeout=8) is not None)
     check("root overflow opens", open_screen_menu())
@@ -2467,6 +2472,24 @@ def t_report():
           'class="container depth-' in html_text and "<h2>Reportable</h2>" in html_text)
     check("HTML embeds a base64 thumbnail",
           "data:image/jpeg;base64," in html_text)
+    # The container cover is embedded as a header data URI (class="cover") and
+    # must decode to a real image on the host; it stays out of the content grid.
+    cover_uri = re.search(
+        r'<img class="cover" src="(data:image/jpeg;base64,[^"]+)"', html_text)
+    check("HTML embeds the container cover as a data URI",
+          cover_uri is not None, "no class=\"cover\" data URI in the report")
+    cover_size = None
+    if cover_uri is not None:
+        from PIL import Image as _Image
+        raw = base64.b64decode(cover_uri.group(1).split(",", 1)[1])
+        _img = _Image.open(io.BytesIO(raw))
+        _img.load()
+        cover_size = _img.size
+    check("HTML cover data URI decodes to a real image",
+          cover_size is not None and cover_size[0] > 0 and cover_size[1] > 0,
+          f"cover decode size={cover_size}")
+    check("HTML keeps the cover out of the photo grid",
+          "_cover.jpg" not in html_text)
     check("HTML escapes the description markup and comma",
           "Report &lt;b&gt;bold&lt;/b&gt;, comma" in html_text
           and "Report <b>bold</b>, comma" not in html_text)
