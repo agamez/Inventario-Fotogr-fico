@@ -50,6 +50,30 @@ scripts/   make_icon.py (parametric icon generator); smoke_test.py (e2e harness)
 - Desktop EXIF writes are verified against host Pillow (0x010E/0x9286/0x9003 round-trips) — pixel data must stay byte-identical (lossless).
 - Emulator notes: grant storage via `adb shell appops set com.inventory MANAGE_EXTERNAL_STORAGE allow`; `adb reverse` for host-loopback mock servers; uiautomator wedges → `pkill -f uiautomator` + retry (harness self-heals).
 
+### Running tests with visible output
+
+Tests take time (JVM is fast; the e2e harness ~15 min). Run them in the background and **watch output via `tail`**, not `>/dev/null`:
+
+```bash
+# JVM tests (quick — minutes):
+JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ./gradlew :shared:jvmTest :desktop:jvmTest
+
+# Desktop headless selftest:
+./gradlew :desktop:run --args="--headless-selftest /tmp/selftest"
+
+# Android e2e harness (~15 min):
+PYTHONUNBUFFERED=1 python3 scripts/smoke_test.py > /tmp/smoke_test_output.log 2>&1 &
+# then monitor in another terminal:
+sleep 30 && tail -50 /tmp/smoke_test_output.log
+# repeat every few minutes until you see "===== N passed, 0 failed ====="
+# or watch continuously:
+tail -f /tmp/smoke_test_output.log
+# when done, check the full report:
+tail -80 /tmp/smoke_test_output.log
+```
+
+Key: the Python harness **buffers stdout when redirected to a file** (not a TTY). Without `PYTHONUNBUFFERED=1` you'll see nothing for 10+ minutes and think it's hung.
+
 ## Architecture rules
 
 - `:shared` must stay pure JVM/Kotlin (no Android imports, no Hilt). Platform DI wires implementations (Hilt on Android, manual composition on desktop).
