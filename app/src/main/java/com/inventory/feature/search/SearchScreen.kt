@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -42,25 +43,29 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import com.inventory.R
+import com.inventory.cache.CacheEntry
 import com.inventory.ui.rememberBackendModel
 
 /** Row count at which the DAO's `LIMIT 100` starts truncating results. */
 private const val SEARCH_RESULT_LIMIT = 100
 
 /**
- * Global search over the storage index: type to filter by EXIF
- * description or note across all folders, or leave the field blank to
- * browse everything (newest first). Each row shows a thumbnail resolved
- * through the active storage backend and the container folder path
- * (relative to the inventory root, "Building / Shelf A") where the item
- * lives; tapping jumps to that folder's browse screen via [onOpenPhoto]
- * (relative path; "" = the root). [onBack] pops this screen.
+ * Global search over the storage index: type to filter photos by EXIF
+ * description or note (and elements by name or note) across all folders,
+ * or leave the field blank to browse everything. Each row shows a
+ * thumbnail resolved through the active storage backend and the container
+ * folder path (relative to the inventory root, "Building / Shelf A") where
+ * the photo or element lives; tapping a photo jumps to that folder's
+ * browse screen via [onOpenPhoto] (relative path; "" = the root) and
+ * tapping an element opens its own screen via [onOpenItem]. [onBack] pops
+ * this screen.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchScreen(
     onBack: () -> Unit,
     onOpenPhoto: (String) -> Unit,
+    onOpenItem: (String) -> Unit,
     viewModel: SearchViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
@@ -151,7 +156,14 @@ fun SearchScreen(
                                 SearchResultRow(
                                     hit = hit,
                                     photoLoader = viewModel::photoModel,
-                                    onClick = { onOpenPhoto(viewModel.containerOf(hit)) },
+                                    itemLoader = viewModel::itemModel,
+                                    onClick = {
+                                        if (hit.entry.kind == CacheEntry.KIND_ITEM) {
+                                            onOpenItem(hit.entry.relPath)
+                                        } else {
+                                            onOpenPhoto(viewModel.containerOf(hit))
+                                        }
+                                    },
                                 )
                             }
                             if (uiState.results.size >= SEARCH_RESULT_LIMIT) {
@@ -174,23 +186,26 @@ fun SearchScreen(
 /**
  * One search hit: a real thumbnail of the item (resolved through the
  * active storage backend, which Coil samples lazily by itself), its
- * description, its container folder path relative to the inventory root,
- * and a jump to that folder.
+ * description (or element name), its container folder path relative to the
+ * inventory root, and a jump to that folder (photos) or to the element's
+ * own screen (items).
  */
 @Composable
 private fun SearchResultRow(
     hit: SearchViewModel.SearchHit,
     photoLoader: suspend (String) -> Any?,
+    itemLoader: suspend (String) -> Any?,
     onClick: () -> Unit,
 ) {
     val entry = hit.entry
+    val isItem = entry.kind == CacheEntry.KIND_ITEM
     ListItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
         headlineContent = {
             Text(
-                text = entry.description ?: entry.name,
+                text = if (isItem) entry.name else entry.description ?: entry.name,
                 style = MaterialTheme.typography.titleMedium,
             )
         },
@@ -201,14 +216,32 @@ private fun SearchResultRow(
             )
         },
         leadingContent = {
-            AsyncImage(
-                model = rememberBackendModel(entry.relPath, photoLoader),
-                contentDescription = null,
-                modifier = Modifier
-                    .size(48.dp)
-                    .clip(RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.Crop,
-            )
+            if (isItem && !entry.hasCover) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Folder,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                }
+            } else {
+                AsyncImage(
+                    model = rememberBackendModel(
+                        entry.relPath,
+                        if (isItem) itemLoader else photoLoader,
+                    ),
+                    contentDescription = null,
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Crop,
+                )
+            }
         },
     )
     HorizontalDivider()

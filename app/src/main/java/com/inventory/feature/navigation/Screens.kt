@@ -29,6 +29,9 @@ sealed class Screens(val route: String) {
     /** Camera capture screen, saving the cover of a given container folder. */
     data object CoverCapture : Screens(route = "cover/{$ARG_PATH}")
 
+    /** Element screen: photos of one multi-photo item (folder with a marker). */
+    data object Item : Screens(route = "item/{$ARG_PATH}")
+
     /** Global search across every indexed photo. */
     data object Search : Screens(route = "search")
 
@@ -49,5 +52,8 @@ sealed class Screens(val route: String) {
 
         /** Builds a concrete [CoverCapture] route for the folder at [relPath] (non-empty). */
         fun buildCoverRoute(relPath: String) = "cover/" + Uri.encode(relPath)
+
+        /** Builds a concrete [Item] route for the element at [relPath] (non-empty). */
+        fun buildItemRoute(relPath: String) = "item/" + Uri.encode(relPath)
     }
 }

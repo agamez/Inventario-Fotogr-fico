@@ -101,12 +101,14 @@ class ContainerViewModel @Inject constructor(
         val name: String,
         val childContainers: Int,
         val childPhotos: Int,
+        val isItem: Boolean = false,
     )
 
     data class ContainerUiState(
         val isRoot: Boolean = false,
         val containerName: String = "",
         val children: List<CacheEntry> = emptyList(),
+        val items: List<CacheEntry> = emptyList(),
         val childCounts: Map<String, ChildCounts> = emptyMap(),
         val photos: List<CacheEntry> = emptyList(),
         val searchQuery: String = "",
@@ -145,6 +147,20 @@ class ContainerViewModel @Inject constructor(
     private val _moveExcludedPaths = MutableStateFlow<Set<String>>(emptySet())
 
     private val childrenFlow: Flow<List<CacheEntry>> = dao.observeChildren(parentArg)
+
+    private val itemsFlow: Flow<List<CacheEntry>> = dao.observeChildItems(parentArg)
+
+    /**
+     * Containers and elements of this folder travel together so the final
+     * state combine stays inside the typed 5-flow overloads.
+     */
+    private data class ChildrenSlice(
+        val containers: List<CacheEntry>,
+        val items: List<CacheEntry>,
+    )
+
+    private val childrenSlice: Flow<ChildrenSlice> =
+        combine(childrenFlow, itemsFlow) { containers, items -> ChildrenSlice(containers, items) }
 
     private val countsFlow: Flow<Map<String, ChildCounts>> =
         dao.observeAllChildCounts().map { rows -> rows.associateBy(ChildCounts::relPath) }
@@ -205,23 +221,24 @@ class ContainerViewModel @Inject constructor(
     ) { scanning, conflicts, trashEnabled -> Triple(scanning, conflicts, trashEnabled) }
 
     val uiState: StateFlow<ContainerUiState> = combine(
-        childrenFlow,
+        childrenSlice,
         countsFlow,
         photoSlice,
         folderFactsFlow,
         scanSlice,
-    ) { children, counts, slice, facts, (scanning, conflicts, trashEnabled) ->
+    ) { slice, counts, photoSlice, facts, (scanning, conflicts, trashEnabled) ->
         ContainerUiState(
             isRoot = isRoot,
             containerName = folderRel.substringAfterLast('/'),
-            children = children,
+            children = slice.containers,
+            items = slice.items,
             childCounts = counts,
-            photos = slice.photos,
-            searchQuery = slice.query,
-            searchScopeHere = slice.scopeHere,
-            selectionMode = slice.selected.isNotEmpty(),
-            selectedPaths = slice.selected,
-            deleteCandidate = slice.deleteCandidate,
+            photos = photoSlice.photos,
+            searchQuery = photoSlice.query,
+            searchScopeHere = photoSlice.scopeHere,
+            selectionMode = photoSlice.selected.isNotEmpty(),
+            selectedPaths = photoSlice.selected,
+            deleteCandidate = photoSlice.deleteCandidate,
             hasCover = facts.hasCover,
             folderMissing = !isRoot && !facts.exists,
             scanning = scanning,
@@ -261,6 +278,18 @@ class ContainerViewModel @Inject constructor(
         .map { folders ->
             folders.filterNot { it.relPath == folderRel }.map { it.toFolderChoice() }
         }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
+        )
+
+    /**
+     * Every indexed element, path-sorted — the destinations of the
+     * "Add to element…" picker (and of an item move's source label).
+     */
+    val allItems: StateFlow<List<FolderChoice>> = dao.observeAllItems()
+        .map { items -> items.map { it.toFolderChoice() } }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
@@ -529,6 +558,105 @@ class ContainerViewModel @Inject constructor(
         }
     }
 
+    /** Creates an EMPTY marked element folder under the one on screen (rule 6). */
+    fun createBlankItem(rawName: String) {
+        val name = rawName.trim()
+        if (name.isEmpty()) {
+            viewModelScope.launch { sendEvent(R.string.error_blank_name) }
+            return
+        }
+        viewModelScope.launch {
+            val created = store.createItem(folderRel, name)
+            scanner.rescan()
+            sendEvent(if (created != null) R.string.item_created else R.string.item_action_failed)
+        }
+    }
+
+    /**
+     * Groups the selected loose photos into a NEW element named [rawName]:
+     * the folder + marker are created first and the photos move in
+     * byte-identically, collision-suffixed.
+     */
+    fun groupSelectedIntoItem(rawName: String) {
+        val name = rawName.trim()
+        if (name.isEmpty()) {
+            viewModelScope.launch { sendEvent(R.string.error_blank_name) }
+            return
+        }
+        val sources = _selectedPaths.value.toList()
+        if (sources.isEmpty()) return
+        viewModelScope.launch {
+            val item = store.groupPhotosIntoItem(folderRel, name, sources)
+            scanner.rescan()
+            if (item != null) {
+                clearSelection()
+                sendEvent(R.string.item_created)
+            } else {
+                sendEvent(R.string.item_action_failed)
+            }
+        }
+    }
+
+    /** Moves the selected loose photos into the existing element [itemRel]. */
+    fun addSelectedToItem(itemRel: String) {
+        val sources = _selectedPaths.value.toList()
+        if (sources.isEmpty()) return
+        viewModelScope.launch {
+            when (val outcome = store.addPhotoToItem(itemRel, sources)) {
+                is InventoryStore.ItemAddOutcome.Success -> {
+                    scanner.rescan()
+                    clearSelection()
+                    sendEvent(R.string.photos_moved, listOf(outcome.moved))
+                }
+                else -> sendEvent(R.string.item_add_photo_failed)
+            }
+        }
+    }
+
+    /** Renames the element (folder-item) at [relPath]. */
+    fun renameItem(relPath: String, rawName: String) {
+        val name = rawName.trim()
+        if (name.isEmpty()) {
+            viewModelScope.launch { sendEvent(R.string.error_blank_name) }
+            return
+        }
+        viewModelScope.launch {
+            store.renameItem(relPath, name)
+            scanner.rescan()
+            sendEvent(R.string.item_saved)
+        }
+    }
+
+    /** Moves the element at [sourceRel] into the container at [targetFolderRel]. */
+    fun moveItemTo(sourceRel: String, targetFolderRel: String) {
+        viewModelScope.launch {
+            if (store.moveItem(sourceRel, targetFolderRel)) {
+                scanner.rescan()
+                sendEvent(R.string.item_moved)
+            } else {
+                sendEvent(R.string.error_invalid_move_target)
+            }
+        }
+    }
+
+    /** Flattens a one-photo element back into a loose photo (rule 3). */
+    fun flattenItem(itemRel: String) {
+        viewModelScope.launch {
+            val flattened = store.flattenItem(itemRel)
+            scanner.rescan()
+            sendEvent(if (flattened) R.string.item_flattened else R.string.item_action_failed)
+        }
+    }
+
+    /** Drops an element's marker, keeping its photos as loose files (or a container). */
+    fun ungroupItem(itemRel: String) {
+        viewModelScope.launch {
+            val ungrouped = store.ungroup(itemRel)
+            scanner.rescan()
+            sendEvent(if (ungrouped) R.string.item_ungrouped else R.string.item_action_failed)
+        }
+    }
+
     /**
      * Renames the folder at [relPath] (the screen's own or a child row). A
      * rename of the folder on screen invalidates this route: the message
@@ -588,7 +716,7 @@ class ContainerViewModel @Inject constructor(
     }
 
     /** Loads the subtree sizes of [relPath] into the state's delete candidate. */
-    fun requestDelete(relPath: String, name: String) {
+    fun requestDelete(relPath: String, name: String, isItem: Boolean = false) {
         viewModelScope.launch {
             val (containers, photos) = store.subtreeCounts(relPath)
             _deleteCandidate.value = DeleteCandidate(
@@ -596,6 +724,7 @@ class ContainerViewModel @Inject constructor(
                 name = name,
                 childContainers = containers,
                 childPhotos = photos,
+                isItem = isItem,
             )
         }
     }
@@ -1086,6 +1215,9 @@ class ContainerViewModel @Inject constructor(
             R.string.container_saved,
             R.string.container_moved,
             R.string.container_deleted,
+            R.string.item_saved,
+            R.string.item_moved,
+            R.string.item_deleted,
         )
     }
 }

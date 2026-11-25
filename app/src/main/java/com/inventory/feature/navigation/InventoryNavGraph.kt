@@ -29,6 +29,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.inventory.feature.containers.ContainerScreen
+import com.inventory.feature.containers.ItemScreen
 import com.inventory.feature.containers.drag.DragController
 import com.inventory.feature.containers.drag.DragKind
 import com.inventory.feature.photos.CameraCaptureScreen
@@ -110,6 +111,9 @@ fun InventoryNavGraph(
                     onOpenContainer = { relPath ->
                         navController.navigate(Screens.buildContainerRoute(relPath))
                     },
+                    onOpenItem = { relPath ->
+                        navController.navigate(Screens.buildItemRoute(relPath))
+                    },
                     onNavigateToFolder = navigateToAncestor,
                     onOpenCamera = { relPath ->
                         navController.navigate(Screens.buildCameraRoute(relPath))
@@ -149,6 +153,9 @@ fun InventoryNavGraph(
                             navController.navigate(Screens.buildContainerRoute(containerRel))
                         }
                     },
+                    onOpenItem = { itemRel ->
+                        navController.navigate(Screens.buildItemRoute(itemRel))
+                    },
                 )
             }
 
@@ -161,6 +168,9 @@ fun InventoryNavGraph(
                 ContainerScreen(
                     onOpenContainer = { relPath ->
                         navController.navigate(Screens.buildContainerRoute(relPath))
+                    },
+                    onOpenItem = { relPath ->
+                        navController.navigate(Screens.buildItemRoute(relPath))
                     },
                     onNavigateToFolder = navigateToAncestor,
                     onOpenCamera = { relPath -> navController.navigate(Screens.buildCameraRoute(relPath)) },
@@ -191,6 +201,23 @@ fun InventoryNavGraph(
             }
 
             composable(
+                route = Screens.Item.route,
+                arguments = listOf(
+                    navArgument(Screens.ARG_PATH) { type = NavType.StringType },
+                ),
+            ) {
+                ItemScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenCamera = { relPath ->
+                        navController.navigate(Screens.buildCameraRoute(relPath))
+                    },
+                    onOpenCoverCapture = { relPath ->
+                        navController.navigate(Screens.buildCoverRoute(relPath))
+                    },
+                )
+            }
+
+            composable(
                 route = Screens.CoverCapture.route,
                 arguments = listOf(
                     navArgument(Screens.ARG_PATH) { type = NavType.StringType },
@@ -213,7 +240,7 @@ fun InventoryNavGraph(
                         modifier = Modifier.padding(8.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        if (payload.kind == DragKind.CONTAINER) {
+                        if (payload.kind == DragKind.CONTAINER || payload.kind == DragKind.ITEM) {
                             Icon(
                                 imageVector = Icons.Outlined.Folder,
                                 contentDescription = null,

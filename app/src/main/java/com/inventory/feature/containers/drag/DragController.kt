@@ -6,8 +6,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 
-/** What a drag is carrying: photos (default) or a single container folder. */
-enum class DragKind { PHOTO, CONTAINER }
+/** What a drag is carrying: photos (default), a single container folder or an item. */
+enum class DragKind { PHOTO, CONTAINER, ITEM }
 
 /** What a drag is carrying: the kind, the relative paths and the ghost label. */
 data class DragPayload(

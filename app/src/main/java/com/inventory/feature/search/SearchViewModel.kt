@@ -19,15 +19,17 @@ import kotlinx.coroutines.flow.stateIn
 
 /**
  * Presents the global search over the storage index: every indexed photo
- * whose EXIF description or note matches, regardless of which folder it
- * lives in. A blank query browses everything (newest first); the DAO caps
- * results at 100 rows. Since descriptions fall back to the file name
- * during a scan, the filename search is implicit.
+ * whose EXIF description or note matches, plus every multi-photo element
+ * whose name or note matches, regardless of where they live. A blank query
+ * browses everything; the DAO caps each result set at 100 rows. Since
+ * descriptions fall back to the file name during a scan, the filename
+ * search is implicit.
  *
  * The screen is read-only — no mutations, hence no one-shot event channel
  * as the CRUD features have — so everything it needs lives in [uiState].
  * Rows are keyed on relative paths; thumbnails resolve through the active
- * storage backend via [photoModel].
+ * storage backend via [photoModel] (photos) and [itemModel] (element
+ * covers).
  */
 @HiltViewModel
 class SearchViewModel @Inject constructor(
@@ -54,8 +56,12 @@ class SearchViewModel @Inject constructor(
     @OptIn(ExperimentalCoroutinesApi::class)
     private val results: Flow<List<SearchHit>> = _query
         .map { raw -> raw.trim() }
-        .flatMapLatest { query -> dao.searchPhotos(query) }
-        .map { rows -> rows.map { SearchHit(it, locationFor(it)) } }
+        .flatMapLatest { query ->
+            combine(dao.searchPhotos(query), dao.searchItems(query)) { photos, items ->
+                items.map { SearchHit(it, locationFor(it)) } +
+                    photos.map { SearchHit(it, locationFor(it)) }
+            }
+        }
 
     val uiState: StateFlow<SearchUiState> = combine(_query, results) { query, results ->
         SearchUiState(
@@ -78,6 +84,9 @@ class SearchViewModel @Inject constructor(
 
     /** Resolves a photo file as a Coil model for the active backend. */
     suspend fun photoModel(relPath: String): Any? = store.photoModel(relPath)
+
+    /** Resolves an element's `_cover.jpg` as a Coil model for the active backend. */
+    suspend fun itemModel(relPath: String): Any? = store.coverModel(relPath)
 
     /** "Building / Shelf A" for a photo folder, null for one sitting in the root. */
     private fun locationFor(entry: CacheEntry): String? =

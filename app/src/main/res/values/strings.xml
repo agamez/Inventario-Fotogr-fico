@@ -187,4 +187,33 @@
     <string name="duplicate_import_anyway">Import anyway</string>
     <string name="duplicate_skip">Skip</string>
     <string name="share_imported_skipped">%1$d imported, %2$d skipped as duplicates</string>
+
+    <!-- Multi-photo elements (item folders with _item.json) -->
+    <string name="items_section">Elements</string>
+    <string name="new_item">New element</string>
+    <string name="new_empty_item">New empty element</string>
+    <string name="item_fallback_title">Element</string>
+    <string name="item_created">Element created</string>
+    <string name="item_saved">Element saved</string>
+    <string name="item_moved">Element moved</string>
+    <string name="item_deleted">Element deleted</string>
+    <string name="item_flattened">Flattened to a single photo</string>
+    <string name="item_ungrouped">Element ungrouped</string>
+    <string name="group_into_item">Group into element</string>
+    <string name="add_to_item">Add to element…</string>
+    <string name="no_items_to_add_to">There are no elements yet. Group photos into one first.</string>
+    <string name="item_empty">No photos yet</string>
+    <string name="add_photos">Add photos</string>
+    <string name="set_as_cover">Set as cover</string>
+    <string name="flatten_item">Flatten to a single photo</string>
+    <string name="ungroup_item">Ungroup element</string>
+    <string name="item_note_add">Add note</string>
+    <string name="edit_note">Edit note</string>
+    <string name="item_delete_title">Delete element?</string>
+    <string name="item_delete_message">\"%1$s\" and its %2$d photos will be moved to the trash and auto-purged after 30 days.</string>
+    <string name="item_delete_message_permanent">\"%1$s\" and its %2$d photos will be permanently deleted. This cannot be undone.</string>
+    <string name="unexpected_content_badge">Contains folders that are ignored</string>
+    <string name="item_add_photo_failed">Could not add the photos to this element</string>
+    <string name="item_action_failed">The action could not be completed</string>
+    <string name="item_flatten_needs_one_photo">Flattening needs exactly one photo</string>
 </resources>

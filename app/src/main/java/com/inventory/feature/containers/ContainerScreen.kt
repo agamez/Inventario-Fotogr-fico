@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.PhotoLibrary
@@ -72,6 +74,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -222,6 +225,7 @@ private val DropHighlightColor = Color(0xFF009688)
 @Composable
 fun ContainerScreen(
     onOpenContainer: (String) -> Unit,
+    onOpenItem: (String) -> Unit,
     onNavigateToFolder: (String) -> Unit,
     onOpenCamera: (String) -> Unit,
     onOpenCoverCapture: (String) -> Unit,
@@ -242,6 +246,7 @@ fun ContainerScreen(
     val tidyState by viewModel.tidyState.collectAsStateWithLifecycle()
     val photoMoveTargets by viewModel.photoMoveTargets.collectAsStateWithLifecycle()
     val movableTargets by viewModel.movableTargets.collectAsStateWithLifecycle()
+    val allItems by viewModel.allItems.collectAsStateWithLifecycle()
     val reportGenerating by viewModel.reportGenerating.collectAsStateWithLifecycle()
     val pendingShare by ShareReceiver.pending.collectAsStateWithLifecycle()
     val importedNotice by ShareReceiver.importedNotice.collectAsStateWithLifecycle()
@@ -257,9 +262,14 @@ fun ContainerScreen(
     var searchExpanded by remember { mutableStateOf(false) }
     var showFabSheet by remember { mutableStateOf(false) }
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showNewItemDialog by remember { mutableStateOf(false) }
+    var showGroupItemDialog by remember { mutableStateOf(false) }
+    var showAddToItemSheet by remember { mutableStateOf(false) }
     var showStorageDialog by remember { mutableStateOf(false) }
     var folderToRename by remember { mutableStateOf<RenameTarget?>(null) }
+    var itemToRename by remember { mutableStateOf<RenameTarget?>(null) }
     var folderToMove by remember { mutableStateOf<String?>(null) }
+    var itemToMove by remember { mutableStateOf<String?>(null) }
     var showPhotoMoveSheet by remember { mutableStateOf(false) }
     var confirmDeleteSelection by remember { mutableStateOf(false) }
     var photoToDelete by remember { mutableStateOf<CacheEntry?>(null) }
@@ -396,6 +406,8 @@ fun ContainerScreen(
                 when (payload.kind) {
                     DragKind.CONTAINER ->
                         viewModel.moveFolderTo(payload.relPaths.first(), destination)
+                    DragKind.ITEM ->
+                        viewModel.moveItemTo(payload.relPaths.first(), destination)
                     DragKind.PHOTO ->
                         viewModel.movePhotosTo(payload.relPaths, destination)
                 }
@@ -565,6 +577,10 @@ fun ContainerScreen(
                                     contentDescription = stringResource(R.string.selection_delete),
                                 )
                             }
+                            SelectionOptionsAction(
+                                onGroupIntoItem = { showGroupItemDialog = true },
+                                onAddToItem = { showAddToItemSheet = true },
+                            )
                         },
                     )
                 } else {
@@ -712,17 +728,28 @@ fun ContainerScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             if (!uiState.selectionMode) {
-                FloatingActionButton(
-                    onClick = {
-                        if (isRoot) showCreateDialog = true else showFabSheet = true
-                    },
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Add,
-                        contentDescription = stringResource(
-                            if (isRoot) R.string.add_container else R.string.add,
-                        ),
-                    )
+                Column(horizontalAlignment = Alignment.End) {
+                    SmallFloatingActionButton(
+                        onClick = { showNewItemDialog = true },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Inventory2,
+                            contentDescription = stringResource(R.string.new_empty_item),
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+                    FloatingActionButton(
+                        onClick = {
+                            if (isRoot) showCreateDialog = true else showFabSheet = true
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = stringResource(
+                                if (isRoot) R.string.add_container else R.string.add,
+                            ),
+                        )
+                    }
                 }
             }
         },
@@ -745,6 +772,7 @@ fun ContainerScreen(
                     }
 
                     uiState.children.isEmpty() &&
+                        uiState.items.isEmpty() &&
                         (isRoot || (uiState.photos.isEmpty() && uiState.searchQuery.isBlank())) -> {
                         val messageResId = if (isRoot) {
                             R.string.inventory_empty
@@ -814,6 +842,44 @@ fun ContainerScreen(
                                         },
                                         onRemovePhoto = viewModel::removeCoverImage,
                                         onDelete = { rel, name -> viewModel.requestDelete(rel, name) },
+                                    )
+                                }
+                            }
+                            if (uiState.items.isNotEmpty()) {
+                                item(
+                                    key = "items-header",
+                                    span = { GridItemSpan(maxLineSpan) },
+                                ) {
+                                    SectionHeader(stringResource(R.string.items_section))
+                                }
+                                items(
+                                    items = uiState.items,
+                                    key = { entry -> "item:${entry.relPath}" },
+                                    span = { GridItemSpan(maxLineSpan) },
+                                ) { entry ->
+                                    ItemRow(
+                                        entry = entry,
+                                        coverLoader = viewModel::coverModel,
+                                        blockedResolver = viewModel::blockedMoveTargets,
+                                        dragController = dragController,
+                                        onOpen = { onOpenItem(entry.relPath) },
+                                        onRename = { rel, name ->
+                                            itemToRename = RenameTarget(rel, name)
+                                        },
+                                        onMove = { rel ->
+                                            viewModel.requestMove(rel)
+                                            itemToMove = rel
+                                        },
+                                        onSetPhoto = { rel ->
+                                            coverTargetRel = rel
+                                            showCoverSheet = true
+                                        },
+                                        onRemovePhoto = viewModel::removeCoverImage,
+                                        onFlatten = viewModel::flattenItem,
+                                        onUngroup = viewModel::ungroupItem,
+                                        onDelete = { rel, name ->
+                                            viewModel.requestDelete(rel, name, isItem = true)
+                                        },
                                     )
                                 }
                             }
@@ -887,6 +953,10 @@ fun ContainerScreen(
                 showFabSheet = false
                 showCreateDialog = true
             },
+            onAddItem = {
+                showFabSheet = false
+                showNewItemDialog = true
+            },
             onTakePhoto = {
                 showFabSheet = false
                 onOpenCamera(viewModel.folderRel)
@@ -908,6 +978,43 @@ fun ContainerScreen(
             onConfirm = { name ->
                 viewModel.createContainer(name)
                 showCreateDialog = false
+            },
+        )
+    }
+
+    if (showNewItemDialog) {
+        ContainerNameDialog(
+            title = stringResource(R.string.new_item),
+            initialName = "",
+            onDismiss = { showNewItemDialog = false },
+            onConfirm = { name ->
+                viewModel.createBlankItem(name)
+                showNewItemDialog = false
+            },
+        )
+    }
+
+    if (showGroupItemDialog) {
+        ContainerNameDialog(
+            title = stringResource(R.string.group_into_item),
+            initialName = "",
+            onDismiss = { showGroupItemDialog = false },
+            onConfirm = { name ->
+                viewModel.groupSelectedIntoItem(name)
+                showGroupItemDialog = false
+            },
+        )
+    }
+
+    if (showAddToItemSheet) {
+        ContainerPathPickerSheet(
+            paths = allItems,
+            titleRes = R.string.add_to_item,
+            emptyMessageRes = R.string.no_items_to_add_to,
+            onDismiss = { showAddToItemSheet = false },
+            onPathSelected = { choice ->
+                viewModel.addSelectedToItem(choice.relPath)
+                showAddToItemSheet = false
             },
         )
     }
@@ -949,6 +1056,31 @@ fun ContainerScreen(
             onPathSelected = { choice ->
                 viewModel.moveFolderTo(sourceRel, choice.relPath)
                 folderToMove = null
+            },
+        )
+    }
+
+    itemToRename?.let { target ->
+        key("item-rename:${target.relPath}") {
+            ContainerNameDialog(
+                title = stringResource(R.string.rename),
+                initialName = target.name,
+                onDismiss = { itemToRename = null },
+                onConfirm = { name ->
+                    viewModel.renameItem(target.relPath, name)
+                    itemToRename = null
+                },
+            )
+        }
+    }
+
+    itemToMove?.let { sourceRel ->
+        ContainerPathPickerSheet(
+            paths = movableTargets,
+            onDismiss = { itemToMove = null },
+            onPathSelected = { choice ->
+                viewModel.moveItemTo(sourceRel, choice.relPath)
+                itemToMove = null
             },
         )
     }
@@ -1144,7 +1276,7 @@ fun ContainerScreen(
     }
 
     if (showCoverSheet) {
-        CoverSourceSheet(
+        PhotoSourceSheet(
             onDismiss = { showCoverSheet = false },
             onTakePhoto = {
                 showCoverSheet = false
@@ -1398,6 +1530,39 @@ private fun RootOptionsAction(
                 onClick = {
                     expanded = false
                     onSettings()
+                },
+            )
+        }
+    }
+}
+
+/** App-bar overflow for a photo selection: group into an element / add to one. */
+@Composable
+private fun SelectionOptionsAction(
+    onGroupIntoItem: () -> Unit,
+    onAddToItem: () -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(
+                imageVector = Icons.Filled.MoreVert,
+                contentDescription = stringResource(R.string.container_options),
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.group_into_item)) },
+                onClick = {
+                    expanded = false
+                    onGroupIntoItem()
+                },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.add_to_item)) },
+                onClick = {
+                    expanded = false
+                    onAddToItem()
                 },
             )
         }
@@ -1677,6 +1842,281 @@ private fun ContainerRow(
     }
 }
 
+/**
+ * Full-span element row: a stacked cover, the element name, its photo
+ * count, conflict/unexpected-content badges and the item action menu. Long
+ * press starts an item drag (resolved as [DragKind.ITEM] against container
+ * rows); a click opens the element's own screen. The card is deliberately
+ * NOT registered as a drop target: elements never accept drops (rule 4).
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ItemRow(
+    entry: CacheEntry,
+    coverLoader: suspend (String) -> Any?,
+    blockedResolver: suspend (String) -> Set<String>,
+    dragController: DragController,
+    onOpen: () -> Unit,
+    onRename: (String, String) -> Unit,
+    onMove: (String) -> Unit,
+    onSetPhoto: (String) -> Unit,
+    onRemovePhoto: (String) -> Unit,
+    onFlatten: (String) -> Unit,
+    onUngroup: (String) -> Unit,
+    onDelete: (String, String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    var rowOrigin by remember { mutableStateOf(Offset.Zero) }
+    val scope = rememberCoroutineScope()
+    val payload = dragController.payload
+    val dragging = payload?.kind == DragKind.ITEM &&
+        payload.relPaths.firstOrNull() == entry.relPath
+    Box(modifier = modifier) {
+        ListItem(
+            modifier = Modifier
+                .fillMaxWidth()
+                .onGloballyPositioned { rowOrigin = it.boundsInRoot().topLeft }
+                .alpha(if (dragging) 0.4f else 1f)
+                .combinedClickable(onClick = onOpen)
+                .pointerInput(entry.relPath) {
+                    var moved = false
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { offset ->
+                            moved = false
+                            dragController.start(
+                                DragPayload(
+                                    relPaths = listOf(entry.relPath),
+                                    label = entry.name,
+                                    kind = DragKind.ITEM,
+                                ),
+                            )
+                            dragController.pointer = rowOrigin + offset
+                            // The item itself (and anything the backend still
+                            // sees under it) cannot receive its own drop.
+                            scope.launch {
+                                val resolved = blockedResolver(entry.relPath)
+                                val current = dragController.payload
+                                if (current != null &&
+                                    current.kind == DragKind.ITEM &&
+                                    current.relPaths.firstOrNull() == entry.relPath
+                                ) {
+                                    dragController.blockedTargets = resolved
+                                }
+                            }
+                        },
+                        onDrag = { change, _ ->
+                            moved = true
+                            dragController.pointer = rowOrigin + change.position
+                        },
+                        onDragEnd = {
+                            if (moved) {
+                                dragController.drop()
+                            } else {
+                                dragController.end()
+                                menuExpanded = true
+                            }
+                        },
+                        onDragCancel = {
+                            // Spring-loaded navigation replaces this row mid-gesture.
+                        },
+                    )
+                },
+            leadingContent = { StackedCoverThumbnail(entry, coverLoader) },
+            headlineContent = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = entry.name,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (entry.isConflict) {
+                        ConflictBadge()
+                    }
+                    if (entry.hasUnexpectedContent) {
+                        Icon(
+                            imageVector = Icons.Filled.Warning,
+                            contentDescription = stringResource(R.string.unexpected_content_badge),
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier
+                                .padding(start = 6.dp)
+                                .size(18.dp),
+                        )
+                    }
+                }
+            },
+            supportingContent = {
+                Text(
+                    text = if (entry.itemPhotoCount == 0) {
+                        stringResource(R.string.item_empty)
+                    } else {
+                        pluralStringResource(
+                            R.plurals.photo_count,
+                            entry.itemPhotoCount,
+                            entry.itemPhotoCount,
+                        )
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            trailingContent = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (entry.itemPhotoCount == 0) {
+                        TextButton(onClick = onOpen) {
+                            Text(stringResource(R.string.add_photos))
+                        }
+                    }
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = stringResource(R.string.container_options),
+                        )
+                    }
+                }
+            },
+        )
+        DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+            ItemMenuItems(
+                itemRel = entry.relPath,
+                itemName = entry.name,
+                photoCount = entry.itemPhotoCount,
+                hasCover = entry.hasCover,
+                onRequestClose = { menuExpanded = false },
+                onRename = onRename,
+                onMove = onMove,
+                onSetPhoto = onSetPhoto,
+                onRemovePhoto = onRemovePhoto,
+                onFlatten = onFlatten,
+                onUngroup = onUngroup,
+                onDelete = onDelete,
+            )
+        }
+        HorizontalDivider(modifier = Modifier.align(Alignment.BottomCenter))
+    }
+}
+
+/** The element card's action list (flatten only enabled on a one-photo element). */
+@Composable
+private fun ItemMenuItems(
+    itemRel: String,
+    itemName: String,
+    photoCount: Int,
+    hasCover: Boolean,
+    onRequestClose: () -> Unit,
+    onRename: (String, String) -> Unit,
+    onMove: (String) -> Unit,
+    onSetPhoto: (String) -> Unit,
+    onRemovePhoto: (String) -> Unit,
+    onFlatten: (String) -> Unit,
+    onUngroup: (String) -> Unit,
+    onDelete: (String, String) -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.rename)) },
+        onClick = {
+            onRequestClose()
+            onRename(itemRel, itemName)
+        },
+    )
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.move_container_to)) },
+        onClick = {
+            onRequestClose()
+            onMove(itemRel)
+        },
+    )
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.set_photo)) },
+        onClick = {
+            onRequestClose()
+            onSetPhoto(itemRel)
+        },
+    )
+    if (hasCover) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.remove_photo)) },
+            onClick = {
+                onRequestClose()
+                onRemovePhoto(itemRel)
+            },
+        )
+    }
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.flatten_item)) },
+        enabled = photoCount == 1,
+        onClick = {
+            onRequestClose()
+            onFlatten(itemRel)
+        },
+    )
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.ungroup_item)) },
+        onClick = {
+            onRequestClose()
+            onUngroup(itemRel)
+        },
+    )
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.delete)) },
+        onClick = {
+            onRequestClose()
+            onDelete(itemRel, itemName)
+        },
+    )
+}
+
+/** Stacked-cover thumbnail: two offset cards hint at the element's photo count. */
+@Composable
+private fun StackedCoverThumbnail(entry: CacheEntry, coverLoader: suspend (String) -> Any?) {
+    Box(modifier = Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .offset(x = 5.dp, y = 5.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        )
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .offset(x = 2.dp, y = 2.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        )
+        val model = if (entry.hasCover) {
+            rememberBackendModel(entry.relPath, coverLoader)
+        } else {
+            null
+        }
+        if (model != null) {
+            AsyncImage(
+                model = model,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Inventory2,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.outlineVariant,
+                )
+            }
+        }
+    }
+}
+
 /** Row thumbnail: the folder's `_cover.jpg` through the active backend. */
 @Composable
 private fun CoverThumbnail(entry: CacheEntry, coverLoader: suspend (String) -> Any?) {
@@ -1707,7 +2147,7 @@ private fun CoverThumbnail(entry: CacheEntry, coverLoader: suspend (String) -> A
 
 /** Small warning marker on entries whose name carries a sync-conflict stamp. */
 @Composable
-private fun ConflictBadge(modifier: Modifier = Modifier) {
+internal fun ConflictBadge(modifier: Modifier = Modifier) {
     Icon(
         imageVector = Icons.Filled.Warning,
         contentDescription = stringResource(R.string.conflict_badge),
@@ -1906,12 +2346,13 @@ private fun DropChip(
     )
 }
 
-/** FAB sheet: the three ways to put something into this container. */
+/** FAB sheet: the ways to put something into this container. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AddOptionsSheet(
     onDismiss: () -> Unit,
     onAddContainer: () -> Unit,
+    onAddItem: () -> Unit,
     onTakePhoto: () -> Unit,
     onChooseFromGallery: () -> Unit,
 ) {
@@ -1932,6 +2373,24 @@ private fun AddOptionsSheet(
                 leadingContent = {
                     Icon(
                         imageVector = Icons.Filled.CreateNewFolder,
+                        contentDescription = null,
+                    )
+                },
+            )
+            HorizontalDivider()
+            ListItem(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onAddItem),
+                headlineContent = {
+                    Text(
+                        text = stringResource(R.string.new_item),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                },
+                leadingContent = {
+                    Icon(
+                        imageVector = Icons.Filled.Inventory2,
                         contentDescription = null,
                     )
                 },
@@ -1979,22 +2438,25 @@ private fun AddOptionsSheet(
 }
 
 /**
- * Container folder picker shared by the container-move and photo-move
- * sheets: relative paths, path-sorted; an explanatory message when nothing
- * can be listed (e.g. this is the only container).
+ * Container folder picker shared by the container-move, item-move,
+ * photo-move and "add to element" sheets: relative paths, path-sorted; an
+ * explanatory message when nothing can be listed (e.g. this is the only
+ * container).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ContainerPathPickerSheet(
+internal fun ContainerPathPickerSheet(
     paths: List<ContainerViewModel.FolderChoice>,
     onDismiss: () -> Unit,
     onPathSelected: (ContainerViewModel.FolderChoice) -> Unit,
+    titleRes: Int = R.string.move_container_to,
+    emptyMessageRes: Int = R.string.no_other_containers,
 ) {
     val sheetState = rememberModalBottomSheetState()
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Text(
-            text = stringResource(R.string.move_container_to),
+            text = stringResource(titleRes),
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier
                 .fillMaxWidth()
@@ -2008,7 +2470,7 @@ private fun ContainerPathPickerSheet(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    text = stringResource(R.string.no_other_containers),
+                    text = stringResource(emptyMessageRes),
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -2140,21 +2602,28 @@ private fun DeleteContainerDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit,
 ) {
+    val titleRes = if (candidate.isItem) R.string.item_delete_title else R.string.delete_container_title
+    val messageRes = when {
+        candidate.isItem && trashEnabled -> R.string.item_delete_message
+        candidate.isItem -> R.string.item_delete_message_permanent
+        trashEnabled -> R.string.delete_container_message
+        else -> R.string.delete_container_message_permanent
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.delete_container_title)) },
+        title = { Text(stringResource(titleRes)) },
         text = {
             Text(
-                stringResource(
-                    if (trashEnabled) {
-                        R.string.delete_container_message
-                    } else {
-                        R.string.delete_container_message_permanent
-                    },
-                    candidate.name,
-                    candidate.childContainers,
-                    candidate.childPhotos,
-                ),
+                if (candidate.isItem) {
+                    stringResource(messageRes, candidate.name, candidate.childPhotos)
+                } else {
+                    stringResource(
+                        messageRes,
+                        candidate.name,
+                        candidate.childContainers,
+                        candidate.childPhotos,
+                    )
+                },
             )
         },
         confirmButton = {
@@ -2348,10 +2817,10 @@ private fun PhotoTile(
     }
 }
 
-/** Sheet offering the two ways to pick a cover photo. */
+/** Sheet offering the two ways to pick a photo (cover source, add-photos). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun CoverSourceSheet(
+internal fun PhotoSourceSheet(
     onDismiss: () -> Unit,
     onTakePhoto: () -> Unit,
     onChooseFromGallery: () -> Unit,
@@ -2403,7 +2872,7 @@ private fun CoverSourceSheet(
 
 /** Lightweight preview confirm for a gallery-picked cover (staged bytes; no metadata). */
 @Composable
-private fun CoverConfirmDialog(
+internal fun CoverConfirmDialog(
     imageBytes: ByteArray,
     onSave: () -> Unit,
     onDiscard: () -> Unit,
@@ -2437,7 +2906,7 @@ private fun CoverConfirmDialog(
 
 /** Shared create/rename dialog: blank input disables Save; text state is local. */
 @Composable
-private fun ContainerNameDialog(
+internal fun ContainerNameDialog(
     title: String,
     initialName: String,
     onDismiss: () -> Unit,
@@ -2482,7 +2951,7 @@ private fun ContainerNameDialog(
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PendingPhotoSaveSheet(
+internal fun PendingPhotoSaveSheet(
     imageBytes: ByteArray,
     remainingCount: Int,
     aiEnabled: Boolean,
@@ -2807,7 +3276,7 @@ private fun TidySuggestionStatus(suggestion: VisionOutcome?, onRetry: () -> Unit
  * first.
  */
 @Composable
-private fun FullScreenPhotoDialog(
+internal fun FullScreenPhotoDialog(
     photo: CacheEntry,
     model: Any?,
     onClose: () -> Unit,

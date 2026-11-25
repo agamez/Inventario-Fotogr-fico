@@ -84,6 +84,8 @@ private const val VIEWER_DOUBLE_TAP_SCALE = 2.5f
  * @param onDelete asks the caller to run the existing confirm/delete flow.
  * @param onUpdateIndex reports the settled page so the caller can keep the
  *   index in sync (e.g. after a delete shrinks the list).
+ * @param onSetCover when non-null, offers "Set as cover" for the current
+ *   photo (used by the element screen); containers leave it null.
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
@@ -95,6 +97,7 @@ fun PhotoViewerDialog(
     onEdit: (CacheEntry) -> Unit,
     onDelete: (CacheEntry) -> Unit,
     onUpdateIndex: (Int) -> Unit,
+    onSetCover: ((CacheEntry) -> Unit)? = null,
 ) {
     if (photos.isEmpty()) return
     val pagerState = rememberPagerState(
@@ -162,6 +165,17 @@ fun PhotoViewerDialog(
                         style = MaterialTheme.typography.labelLarge,
                     )
                     Spacer(modifier = Modifier.weight(1f))
+                    if (onSetCover != null) {
+                        TextButton(
+                            onClick = { current?.let(onSetCover) },
+                            enabled = current != null,
+                        ) {
+                            Text(
+                                text = stringResource(R.string.set_as_cover),
+                                color = Color.White,
+                            )
+                        }
+                    }
                     TextButton(
                         onClick = { current?.let(onEdit) },
                         enabled = current != null,
