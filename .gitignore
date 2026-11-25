@@ -9,3 +9,5 @@ captures/
 .externalNativeBuild
 .cxx/
 __pycache__/
+.selftest/
+.hq/
