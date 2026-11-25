@@ -17,6 +17,16 @@ import androidx.room.Entity
  * compare it with `IS`). [documentUri] is the SAF locator captured during
  * the scan that found this entry — null in File mode and purely an
  * optional hint; the relative path stays the identity.
+ *
+ * [kind] tells the three entry types apart. Items ([KIND_ITEM]) are
+ * folders carrying an `_item.json` marker (see
+ * `docs/ideas-multi-photo-items.md`); their photos are ordinary
+ * [KIND_PHOTO] rows whose [parentRel] is the item's relPath, so the
+ * container grid (which queries the container's own relPath) never lists
+ * them twice. Item rows additionally carry the element's [note] (from the
+ * marker), [itemPhotoCount] (photos directly inside, cover excluded) and
+ * [hasUnexpectedContent] (rule 5: subfolders inside an item are ignored
+ * for counting and surface as a warning badge).
  */
 @Entity(tableName = "index_entries", primaryKeys = ["relPath"])
 data class CacheEntry(
@@ -31,6 +41,8 @@ data class CacheEntry(
     val lastModified: Long = 0L,
     val size: Long = 0L,
     val hasCover: Boolean = false,
+    val itemPhotoCount: Int = 0,
+    val hasUnexpectedContent: Boolean = false,
     val documentUri: String? = null,
 ) {
 
@@ -40,5 +52,8 @@ data class CacheEntry(
 
         /** kind value: a photo JPEG file. */
         const val KIND_PHOTO = 1
+
+        /** kind value: a multi-photo item folder (carries `_item.json`). */
+        const val KIND_ITEM = 2
     }
 }

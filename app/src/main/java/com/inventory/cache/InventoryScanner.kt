@@ -2,6 +2,7 @@ package com.inventory.cache
 
 import com.inventory.storage.BackendEntry
 import com.inventory.storage.InventoryStore
+import com.inventory.storage.ItemMarkerData
 import com.inventory.storage.ScanState
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -18,6 +19,15 @@ import kotlinx.coroutines.sync.withLock
  * direct File access see the same on-disk layout). Each row is keyed by
  * the entry's RELATIVE path and carries stat data plus — for photos — the
  * EXIF triple.
+ *
+ * Every child folder is classified by reading its `_item.json` marker
+ * (one extra read per folder, negligible): a valid marker makes it an
+ * item ([CacheEntry.KIND_ITEM]) whose photos are indexed with the item as
+ * their `parentRel`, while an unmarked folder is a container
+ * ([CacheEntry.KIND_CONTAINER]). Folders inside an item are never
+ * descended into (rule 4: no nested items); they are ignored for counting
+ * and only raise [CacheEntry.hasUnexpectedContent] on the item. Conflicts
+ * (`*.sync-conflict-*`) anywhere inside an item propagate to its row.
  *
  * Strategy, deliberately simple (correctness over cleverness): every scan
  * collects the full new row list and swaps it in with [CacheDao.replaceAll]
@@ -88,8 +98,18 @@ class InventoryScanner @Inject constructor(
         while (stack.isNotEmpty()) {
             val (dirRel, parentRel) = stack.removeLast()
             for (child in store.listContainers(dirRel)) {
-                rows += containerRow(child, parentRel)
-                stack.addLast(child.relPath to child.relPath)
+                val marker = store.readItemMarker(child.relPath)
+                if (marker != null) {
+                    // Item folders are leaves for the walk (rule 4: no nested
+                    // items); their photos are indexed with the item as parent.
+                    val photos = store.listPhotos(child.relPath)
+                    val ignoredFolders = store.listContainers(child.relPath)
+                    rows += itemRow(child, parentRel, marker, photos, ignoredFolders)
+                    photos.forEach { photo -> rows += photoRow(photo, child.relPath, previous) }
+                } else {
+                    rows += containerRow(child, parentRel)
+                    stack.addLast(child.relPath to child.relPath)
+                }
             }
             for (photo in store.listPhotos(dirRel)) {
                 rows += photoRow(photo, parentRel, previous)
@@ -108,6 +128,36 @@ class InventoryScanner @Inject constructor(
         // A folder's mtime churns on every child edit; the cover check is
         // one cheap lookup, enough to always refresh it.
         hasCover = store.hasCover(entry.relPath),
+        documentUri = store.documentUriFor(entry.relPath),
+    )
+
+    /**
+     * The row of a marked item folder: name from the folder, note from the
+     * marker, photo count over its direct photos (cover excluded by the
+     * backend) and the rule-5 warning when subfolders were found inside it
+     * (they are ignored for counting and never indexed). A conflict
+     * anywhere inside the item (its own name, any of its photos or ignored
+     * subfolders) propagates to the item row — the badge Syncthing needs.
+     */
+    private suspend fun itemRow(
+        entry: BackendEntry,
+        parentRel: String?,
+        marker: ItemMarkerData,
+        photos: List<BackendEntry>,
+        ignoredFolders: List<BackendEntry>,
+    ): CacheEntry = CacheEntry(
+        relPath = entry.relPath,
+        parentRel = parentRel,
+        name = entry.name,
+        kind = CacheEntry.KIND_ITEM,
+        isConflict = entry.isConflict ||
+            photos.any(BackendEntry::isConflict) ||
+            ignoredFolders.any(BackendEntry::isConflict),
+        note = marker.note,
+        lastModified = entry.lastModified,
+        hasCover = store.hasCover(entry.relPath),
+        itemPhotoCount = photos.size,
+        hasUnexpectedContent = ignoredFolders.isNotEmpty(),
         documentUri = store.documentUriFor(entry.relPath),
     )
 

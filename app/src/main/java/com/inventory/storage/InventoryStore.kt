@@ -394,6 +394,222 @@ class InventoryStore @Inject constructor(
 
     // endregion
 
+    // region items
+
+    /**
+     * The parsed `_item.json` marker of [folderRel], or null when the
+     * folder carries no marker, its payload is corrupt or it is a foreign
+     * marker (unknown `type`) — all of which mean "ordinary container".
+     * Never throws on bad content: a corrupt marker can only demote the
+     * folder, never block a scan.
+     */
+    suspend fun readItemMarker(folderRel: String): ItemMarkerData? {
+        val bytes = backendOrNull()?.readAuxFile(joinRel(folderRel, ITEM_MARKER)) ?: return null
+        return ItemMarker.parse(bytes)?.takeIf { ItemMarker.isItem(it) }
+    }
+
+    /** True when [folderRel] is an item (a folder carrying a valid marker). */
+    suspend fun isItem(folderRel: String): Boolean = readItemMarker(folderRel) != null
+
+    /**
+     * Creates an EMPTY item under [parentRel]: a collision-suffixed new
+     * folder carrying [_item.json] with the optional [note]. An unmarked
+     * folder would silently read as a container, so a failed marker write
+     * rolls the new folder back and reports null (disk left untouched).
+     *
+     * Returns the ACTUAL relPath of the created item.
+     */
+    suspend fun createItem(parentRel: String, name: String, note: String? = null): String? =
+        withContext(Dispatchers.IO) {
+            val active = backendOrNull() ?: return@withContext null
+            val parent = parentRel.trimEnd('/')
+            // Rule 4: items never nest — refusing here protects every caller.
+            if (parent.isNotEmpty() && readItemMarker(parent) != null) return@withContext null
+            val rel = try {
+                active.createFolder(parent, Filenames.sanitize(name))
+            } catch (exception: IOException) {
+                return@withContext null
+            }
+            val marker = ItemMarker.writeItemMarker(note?.trim()?.ifEmpty { null })
+            try {
+                active.writePhotoBytes(joinRel(rel, ITEM_MARKER), marker)
+                rel
+            } catch (exception: IOException) {
+                active.deleteFolderRecursive(rel)
+                null
+            }
+        }
+
+    /**
+     * Rewrites the element note in `_item.json` (atomic replace through the
+     * backend's aux write). Blank [note] drops the field. Returns false when
+     * [itemRel] is not an item or the write fails.
+     */
+    suspend fun updateItemNote(itemRel: String, note: String?): Boolean =
+        withContext(Dispatchers.IO) {
+            val active = backendOrNull() ?: return@withContext false
+            val rel = itemRel.trimEnd('/')
+            if (rel.isEmpty() || readItemMarker(rel) == null) return@withContext false
+            val marker = ItemMarker.writeItemMarker(note?.trim()?.ifEmpty { null })
+            try {
+                active.writePhotoBytes(joinRel(rel, ITEM_MARKER), marker)
+                true
+            } catch (exception: IOException) {
+                false
+            }
+        }
+
+    /** Renames the item folder at [itemRel]; returns the ACTUAL resulting relPath. */
+    suspend fun renameItem(itemRel: String, newName: String): String {
+        if (!isItem(itemRel)) return itemRel
+        return renameFolder(itemRel, newName)
+    }
+
+    /**
+     * Moves the item folder at [itemRel] under [newParentRel]. Items never
+     * accept containers and never nest (rule 4), so a destination that is
+     * itself an item refuses the move without touching disk.
+     */
+    suspend fun moveItem(itemRel: String, newParentRel: String): Boolean {
+        val parentRel = newParentRel.trimEnd('/')
+        if (parentRel.isNotEmpty() && isItem(parentRel)) return false
+        return moveFolder(itemRel, parentRel)
+    }
+
+    /**
+     * "Flatten to a single photo" (rule 3): the item's ONLY photo moves out
+     * into the parent container under the item's name (collision-suffixed)
+     * and the item folder — marker included — is deleted. Returns false and
+     * touches nothing unless exactly one photo remains inside: degrading
+     * 2+ photos to one is never automatic, only this explicit manual
+     * action (a 1-photo item simply renders as a normal tile).
+     */
+    suspend fun flattenItem(itemRel: String): Boolean = withContext(Dispatchers.IO) {
+        val active = backendOrNull() ?: return@withContext false
+        if (readItemMarker(itemRel) == null) return@withContext false
+        val photos = active.listPhotos(itemRel)
+        if (photos.size != 1) return@withContext false
+        val photo = photos.single()
+        val ext = photo.name.substringAfterLast('.', "jpg").ifEmpty { "jpg" }
+        val parentRel = parentOf(itemRel)
+        val bytes = active.readPhotoBytes(photo.relPath) ?: return@withContext false
+        val targetName = uniqueNameInFolder(
+            active,
+            parentRel,
+            Filenames.sanitize(nameOf(itemRel)),
+            ext,
+        )
+        val targetRel = joinRel(parentRel, targetName)
+        try {
+            active.writePhotoBytes(targetRel, bytes)
+        } catch (exception: IOException) {
+            return@withContext false
+        }
+        if (!active.deleteFile(photo.relPath)) {
+            active.deleteFile(targetRel)
+            return@withContext false
+        }
+        active.deleteFolderRecursive(itemRel)
+        true
+    }
+
+    /**
+     * Removes the item marker only: the folder degrades to an ordinary
+     * container with all its photos (and any ignored subfolders) in place.
+     * A folder left empty (no photos, subfolders or cover — e.g. an item
+     * created and never filled) is deleted entirely, since it only existed
+     * as an item. Returns false when [itemRel] is not an item.
+     */
+    suspend fun ungroup(itemRel: String): Boolean = withContext(Dispatchers.IO) {
+        val active = backendOrNull() ?: return@withContext false
+        if (readItemMarker(itemRel) == null) return@withContext false
+        if (!active.deleteFile(joinRel(itemRel, ITEM_MARKER))) return@withContext false
+        val emptied = active.listPhotos(itemRel).isEmpty() &&
+            active.listContainers(itemRel).isEmpty() &&
+            !active.hasCover(itemRel)
+        if (emptied) active.deleteFolderRecursive(itemRel)
+        true
+    }
+
+    /**
+     * Groups [photoRels] into a NEW item folder called [name] inside
+     * [parentRel]: folder + marker first, then the photos move in
+     * byte-identically (temp + rename, never re-encoded) with
+     * collision-suffixed " (2)" names. When no photo could be moved the
+     * just-created item is rolled back and null is returned.
+     */
+    suspend fun groupPhotosIntoItem(
+        parentRel: String,
+        name: String,
+        photoRels: List<String>,
+        note: String? = null,
+    ): String? = withContext(Dispatchers.IO) {
+        val active = backendOrNull() ?: return@withContext null
+        val sources = photoRels.map { it.trimEnd('/') }.distinct()
+        if (sources.isEmpty()) return@withContext null
+        val itemRel = createItem(parentRel, name, note) ?: return@withContext null
+        if (movePhotos(sources, itemRel) == 0) {
+            active.deleteFolderRecursive(itemRel)
+            null
+        } else {
+            itemRel
+        }
+    }
+
+    /**
+     * Adds existing photos to the element at [elementRel]:
+     *
+     * - an item folder receives the photos directly ([movePhotos] keeps
+     *   the payload byte-identical);
+     * - a single-photo element — a loose JPEG file — is PROMOTED first
+     *   (rule 2): a `<stem>/` folder carrying the marker is created next
+     *   to it, the existing file moves inside byte-identically and the new
+     *   photos follow it. A promotion whose existing photo cannot move is
+     *   rolled back, so no half-element is left behind.
+     *
+     * Returns the resulting item relPath and how many photos ended up in
+     * it, or a failure case when nothing moved.
+     */
+    suspend fun addPhotoToItem(elementRel: String, photoRels: List<String>): ItemAddOutcome =
+        withContext(Dispatchers.IO) {
+            val active = backendOrNull() ?: return@withContext ItemAddOutcome.NotFound
+            val target = elementRel.trimEnd('/')
+            if (target.isEmpty()) return@withContext ItemAddOutcome.NotFound
+            val additions = photoRels.map { it.trimEnd('/') }.distinct().filter { it != target }
+            if (additions.isEmpty()) return@withContext ItemAddOutcome.NoPhotosMoved
+            if (readItemMarker(target) != null) {
+                val moved = movePhotos(additions, target)
+                return@withContext if (moved > 0) {
+                    ItemAddOutcome.Success(target, moved)
+                } else {
+                    ItemAddOutcome.NoPhotosMoved
+                }
+            }
+            if (!isSinglePhotoElement(active, target)) return@withContext ItemAddOutcome.NotFound
+            val parentRel = parentOf(target)
+            val stem = nameOf(target).substringBeforeLast('.', nameOf(target))
+            val itemRel = createItem(parentRel, stem) ?: return@withContext ItemAddOutcome.NotFound
+            if (movePhotos(listOf(target), itemRel) != 1) {
+                active.deleteFolderRecursive(itemRel)
+                return@withContext ItemAddOutcome.NoPhotosMoved
+            }
+            val moved = movePhotos(additions, itemRel)
+            ItemAddOutcome.Success(itemRel, 1 + moved)
+        }
+
+    /** True when [rel] is an existing loose JPEG file — the 1-photo element shape. */
+    private suspend fun isSinglePhotoElement(active: StorageBackend, rel: String): Boolean {
+        val name = nameOf(rel)
+        if (name.startsWith(".")) return false
+        val ext = name.substringAfterLast('.', "")
+        if (!ext.equals("jpg", ignoreCase = true) && !ext.equals("jpeg", ignoreCase = true)) {
+            return false
+        }
+        return active.exists(rel)
+    }
+
+    // endregion
+
     /** The first free "<base>.jpg" name inside [folderRel] (case-insensitive). */
     private suspend fun uniquePhotoName(
         active: StorageBackend,
@@ -427,6 +643,18 @@ class InventoryStore @Inject constructor(
         data object Success : UpdateOutcome
         data object BlankDescription : UpdateOutcome
         data object InvalidImage : UpdateOutcome
+    }
+
+    /** Result of adding existing photos to an element (see [addPhotoToItem]). */
+    sealed interface ItemAddOutcome {
+        /** [moved] photos now live in the item at [itemRel]. */
+        data class Success(val itemRel: String, val moved: Int) : ItemAddOutcome
+
+        /** [addPhotoToItem]'s element is neither an item nor a single-photo element file. */
+        data object NotFound : ItemAddOutcome
+
+        /** Nothing moved (sources vanished, or the promotion could not complete). */
+        data object NoPhotosMoved : ItemAddOutcome
     }
 
     private companion object {
