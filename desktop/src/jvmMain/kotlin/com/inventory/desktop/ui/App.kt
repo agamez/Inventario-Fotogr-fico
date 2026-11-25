@@ -149,6 +149,9 @@ fun App(controller: DesktopAppController) {
     val pointerModifiers = remember { mutableStateOf(PointerModifiers()) }
 
     var selectedFolder by remember { mutableStateOf<String?>(null) }
+    // The open element (its relative path) — replaces the Android `item/{path}`
+    // route; null means the browse surface is showing.
+    var selectedItem by remember { mutableStateOf<String?>(null) }
     var showGlobalSearch by remember { mutableStateOf(false) }
     var showTrash by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
@@ -159,9 +162,20 @@ fun App(controller: DesktopAppController) {
 
     // Dialog state.
     var showCreateDialog by remember { mutableStateOf(false) }
+    var showCreateItemDialog by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<DesktopIndex.IndexedContainer?>(null) }
     var moveSourceRel by remember { mutableStateOf<String?>(null) }
     var deleteTarget by remember { mutableStateOf<DesktopIndex.IndexedContainer?>(null) }
+    // Element dialogs: rename/move/delete/note plus the two group actions.
+    var renameItemTarget by remember { mutableStateOf<DesktopIndex.IndexedItem?>(null) }
+    var moveItemRel by remember { mutableStateOf<String?>(null) }
+    var deleteItemTarget by remember { mutableStateOf<DesktopIndex.IndexedItem?>(null) }
+    var noteItemRel by remember { mutableStateOf<String?>(null) }
+    var showGroupItemDialog by remember { mutableStateOf(false) }
+    var showAddToItemPicker by remember { mutableStateOf(false) }
+    // Where the pending import queue writes: the open element, else the folder.
+    var importTargetRel by remember { mutableStateOf<String?>(null) }
+
     // Full-screen viewer page (null while closed); Edit opens [editPhotoRel],
     // and a viewer delete waits in [viewerDeleteRel].
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
@@ -193,6 +207,11 @@ fun App(controller: DesktopAppController) {
     }
 
     val folderRel = selectedFolder ?: ""
+    // The element currently open (null while browsing); derived from the
+    // snapshot so a rename/move/flatten/ungroup closes it cleanly.
+    val currentItem = selectedItem?.let { rel -> snapshot.allItems.firstOrNull { it.relPath == rel } }
+    // The path the top bar titles/breadcrumbs: the open element, else the folder.
+    val screenRel = currentItem?.relPath ?: folderRel
     val dragOwner = folderRel
     val isRoot = folderRel.isEmpty()
 
@@ -204,10 +223,24 @@ fun App(controller: DesktopAppController) {
         }
     }
 
+    // The open element is gone (deleted, flattened to a file or ungrouped
+    // into a container): fall back to its parent folder. The action that
+    // removed it already reported its own message.
+    LaunchedEffect(snapshot, selectedItem) {
+        val rel = selectedItem ?: return@LaunchedEffect
+        if (snapshot.allItems.none { it.relPath == rel }) selectedItem = null
+    }
+
     // The viewer pages through exactly the grid's list (same folder + search
-    // filter), so it is recomputed whenever the index or the filter changes.
-    val viewerPhotos = remember(snapshot, folderRel, browseQuery, includeSubtree) {
-        controller.photosIn(folderRel, browseQuery, includeSubtree)
+    // filter), or the open element's photos; recomputed when the index or the
+    // filter changes.
+    val viewerPhotos = remember(snapshot, folderRel, selectedItem, browseQuery, includeSubtree) {
+        val item = selectedItem
+        if (item != null) {
+            controller.photosIn(item, "", includeSubtree = false)
+        } else {
+            controller.photosIn(folderRel, browseQuery, includeSubtree)
+        }
     }
 
     // The two item lists the keyboard focus cursor walks: direct child
@@ -317,6 +350,7 @@ fun App(controller: DesktopAppController) {
                 if (moved) {
                     message = when (payload.kind) {
                         DragKind.CONTAINER -> DesktopStrings.MSG_CONTAINER_MOVED
+                        DragKind.ITEM -> DesktopStrings.MSG_ITEM_MOVED
                         DragKind.PHOTO -> DesktopStrings.MSG_PHOTOS_MOVED
                     }
                 }
@@ -380,9 +414,12 @@ fun App(controller: DesktopAppController) {
                 }
 
                 // Arrows/Enter/F2/Delete/Ctrl+A belong to the browse surface
-                // only: a focused search field, the viewer, the trash view or
-                // the global search must keep their own key handling.
-                if (browseSearchFocused || viewerIndex != null || showTrash || showGlobalSearch) {
+                // only: a focused search field, the viewer, the trash view,
+                // the global search or an open element must keep their own
+                // key handling.
+                if (browseSearchFocused || viewerIndex != null || showTrash ||
+                    showGlobalSearch || currentItem != null
+                ) {
                     return@onPreviewKeyEvent false
                 }
 
@@ -496,8 +533,11 @@ fun App(controller: DesktopAppController) {
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             TopBar(
-                folderRel = folderRel,
-                onNavigateToFolder = { selectedFolder = it.ifEmpty { null } },
+                folderRel = screenRel,
+                onNavigateToFolder = {
+                    selectedItem = null
+                    selectedFolder = it.ifEmpty { null }
+                },
                 scanning = scanning,
                 showGlobalSearch = showGlobalSearch,
                 showTrash = showTrash,
@@ -538,8 +578,13 @@ fun App(controller: DesktopAppController) {
                 ActionBar(
                     folderRel = folderRel,
                     rootPath = controller.rootDir.absolutePath,
-                    onUp = { selectedFolder = parentRelOf(folderRel) },
+                    itemOpen = currentItem != null,
+                    onUp = {
+                        if (selectedItem != null) selectedItem = null
+                        else selectedFolder = parentRelOf(folderRel)
+                    },
                     onImport = {
+                        importTargetRel = null
                         scope.launch {
                             val files = pickJpegFiles(DesktopStrings.IMAGE_PICKER_TITLE, controller.rootDir.absolutePath)
                             if (files.isEmpty()) return@launch
@@ -548,6 +593,7 @@ fun App(controller: DesktopAppController) {
                         }
                     },
                     onAddContainer = { showCreateDialog = true },
+                    onAddItem = { showCreateItemDialog = true },
                 )
             }
             // Ancestor drop chips: shown for the whole drag when the current
@@ -603,9 +649,68 @@ fun App(controller: DesktopAppController) {
                         globalQuery = ""
                         browseQuery = ""
                         includeSubtree = false
-                        selectedFolder = photo.parentRel.takeIf { it.isNotEmpty() }
+                        val itemParent = photo.parentRel.takeIf { parent ->
+                            snapshot.allItems.any { it.relPath == parent }
+                        }
+                        if (itemParent != null) {
+                            selectedFolder = parentRelOf(itemParent)
+                            selectedItem = itemParent
+                        } else {
+                            selectedItem = null
+                            selectedFolder = photo.parentRel.takeIf { it.isNotEmpty() }
+                        }
                         pendingViewerRel = photo.relPath
                     },
+                    onOpenItem = { item ->
+                        showGlobalSearch = false
+                        globalQuery = ""
+                        browseQuery = ""
+                        includeSubtree = false
+                        selectedFolder = parentRelOf(item.relPath)
+                        selectedItem = item.relPath
+                    },
+                )
+            } else if (currentItem != null) {
+                ItemView(
+                    controller = controller,
+                    itemRel = currentItem.relPath,
+                    onBack = { selectedItem = null },
+                    onMessage = { message = it },
+                    onOpenPhoto = { _, index -> viewerIndex = index },
+                    onAddPhotos = { itemRel ->
+                        importTargetRel = itemRel
+                        scope.launch {
+                            val files = pickJpegFiles(DesktopStrings.IMAGE_PICKER_TITLE, controller.rootDir.absolutePath)
+                            if (files.isEmpty()) return@launch
+                            val staged = withFilesRead(files)
+                            if (staged.isNotEmpty()) controller.queueForImport(staged)
+                        }
+                    },
+                    onSetCoverFile = { itemRel -> coverSourceRel = itemRel },
+                    onRename = { renameItemTarget = it },
+                    onMove = { moveItemRel = it },
+                    onEditNote = { noteItemRel = it.relPath },
+                    onFlatten = { item ->
+                        scope.launch {
+                            val outcome = controller.flattenItem(item.relPath)
+                            message = if (outcome == DesktopAppController.Outcome.Saved) {
+                                DesktopStrings.MSG_ITEM_FLATTENED
+                            } else {
+                                DesktopStrings.MSG_ITEM_FLATTEN_NEEDS_ONE
+                            }
+                        }
+                    },
+                    onUngroup = { item ->
+                        scope.launch {
+                            val outcome = controller.ungroupItem(item.relPath)
+                            message = if (outcome == DesktopAppController.Outcome.Saved) {
+                                DesktopStrings.MSG_ITEM_UNGROUPED
+                            } else {
+                                DesktopStrings.MSG_ITEM_ACTION_FAILED
+                            }
+                        }
+                    },
+                    onDelete = { deleteItemTarget = it },
                 )
             } else {
                 BrowseView(
@@ -616,6 +721,10 @@ fun App(controller: DesktopAppController) {
                     onQueryChange = { browseQuery = it },
                     onScopeChange = { includeSubtree = it },
                     onOpenContainer = { selectedFolder = it },
+                    onOpenItem = {
+                        controller.clearSelection()
+                        selectedItem = it
+                    },
                     onOpenPhoto = { _, index -> viewerIndex = index },
                     onRename = { renameTarget = it },
                     onMove = { moveSourceRel = it },
@@ -627,6 +736,40 @@ fun App(controller: DesktopAppController) {
                             message = DesktopStrings.MSG_COVER_UPDATED
                         }
                     },
+                    onRenameItem = { renameItemTarget = it },
+                    onMoveItem = { moveItemRel = it },
+                    onDeleteItem = { deleteItemTarget = it },
+                    onFlattenItem = { item ->
+                        scope.launch {
+                            val outcome = controller.flattenItem(item.relPath)
+                            message = if (outcome == DesktopAppController.Outcome.Saved) {
+                                DesktopStrings.MSG_ITEM_FLATTENED
+                            } else {
+                                DesktopStrings.MSG_ITEM_FLATTEN_NEEDS_ONE
+                            }
+                        }
+                    },
+                    onUngroupItem = { item ->
+                        scope.launch {
+                            val outcome = controller.ungroupItem(item.relPath)
+                            message = if (outcome == DesktopAppController.Outcome.Saved) {
+                                DesktopStrings.MSG_ITEM_UNGROUPED
+                            } else {
+                                DesktopStrings.MSG_ITEM_ACTION_FAILED
+                            }
+                        }
+                    },
+                    onAddPhotosToItem = { itemRel ->
+                        importTargetRel = itemRel
+                        scope.launch {
+                            val files = pickJpegFiles(DesktopStrings.IMAGE_PICKER_TITLE, controller.rootDir.absolutePath)
+                            if (files.isEmpty()) return@launch
+                            val staged = withFilesRead(files)
+                            if (staged.isNotEmpty()) controller.queueForImport(staged)
+                        }
+                    },
+                    onGroupIntoItem = { showGroupItemDialog = true },
+                    onAddSelectedToItem = { showAddToItemPicker = true },
                     dragController = dragController,
                     dragOwner = dragOwner,
                     gridState = gridState,
@@ -671,6 +814,160 @@ fun App(controller: DesktopAppController) {
                             DesktopAppController.Outcome.BlankName -> DesktopStrings.MSG_ERROR_BLANK_NAME
                             else -> DesktopStrings.MSG_ERROR_OPERATION
                         }
+                    }
+                },
+            )
+        }
+
+        if (showCreateItemDialog) {
+            NameDialog(
+                title = DesktopStrings.NEW_EMPTY_ITEM,
+                initial = "",
+                onDismiss = { showCreateItemDialog = false },
+                onConfirm = { raw ->
+                    showCreateItemDialog = false
+                    scope.launch {
+                        val (created, outcome) = controller.createItem(folderRel, raw)
+                        message = when (outcome) {
+                            DesktopAppController.Outcome.Created ->
+                                if (created != null) DesktopStrings.MSG_ITEM_CREATED
+                                else DesktopStrings.MSG_ITEM_ACTION_FAILED
+                            DesktopAppController.Outcome.BlankName -> DesktopStrings.MSG_ERROR_BLANK_NAME
+                            else -> DesktopStrings.MSG_ITEM_ACTION_FAILED
+                        }
+                    }
+                },
+            )
+        }
+
+        renameItemTarget?.let { target ->
+            NameDialog(
+                title = DesktopStrings.RENAME,
+                initial = target.name,
+                onDismiss = { renameItemTarget = null },
+                onConfirm = { raw ->
+                    renameItemTarget = null
+                    scope.launch {
+                        val (actual, outcome) = controller.renameItem(target.relPath, raw)
+                        message = when (outcome) {
+                            DesktopAppController.Outcome.Saved -> DesktopStrings.MSG_ITEM_SAVED
+                            DesktopAppController.Outcome.BlankName -> DesktopStrings.MSG_ERROR_BLANK_NAME
+                            else -> DesktopStrings.MSG_ITEM_ACTION_FAILED
+                        }
+                        if (actual != null && selectedItem == target.relPath) selectedItem = null
+                    }
+                },
+            )
+        }
+
+        moveItemRel?.let { source ->
+            FolderPickerDialog(
+                title = DesktopStrings.MOVE_CONTAINER_TITLE,
+                choices = controller.folderChoices(),
+                onDismiss = { moveItemRel = null },
+                onPick = { choice ->
+                    moveItemRel = null
+                    scope.launch {
+                        when (controller.moveItem(source, choice.relPath)) {
+                            DesktopAppController.Outcome.Moved -> {
+                                message = DesktopStrings.MSG_ITEM_MOVED
+                                if (selectedItem == source) {
+                                    selectedItem = null
+                                    selectedFolder = choice.relPath.ifEmpty { null }
+                                }
+                            }
+                            else -> message = DesktopStrings.MSG_ERROR_INVALID_MOVE
+                        }
+                    }
+                },
+            )
+        }
+
+        deleteItemTarget?.let { target ->
+            val photoCount = snapshot.allItems
+                .firstOrNull { it.relPath == target.relPath }?.photoCount
+                ?: target.photoCount
+            ConfirmDialog(
+                title = DesktopStrings.ITEM_DELETE_TITLE,
+                message = (if (trashEnabled) {
+                    DesktopStrings.ITEM_DELETE_MESSAGE
+                } else {
+                    DesktopStrings.ITEM_DELETE_MESSAGE_PERMANENT
+                }).format(target.name, photoCount),
+                confirmLabel = DesktopStrings.DELETE,
+                onDismiss = { deleteItemTarget = null },
+                onConfirm = {
+                    deleteItemTarget = null
+                    scope.launch {
+                        // An element is a full folder: the trash moves it as a
+                        // whole (one stamp, folder kind) and the marker rides along.
+                        controller.deleteFolder(target.relPath)
+                        message = DesktopStrings.MSG_ITEM_DELETED
+                        if (selectedItem == target.relPath) selectedItem = null
+                    }
+                },
+            )
+        }
+
+        noteItemRel?.let { rel ->
+            val note = snapshot.allItems.firstOrNull { it.relPath == rel }?.note
+            NoteDialog(
+                title = if (note.isNullOrBlank()) DesktopStrings.ITEM_NOTE_ADD else DesktopStrings.EDIT_NOTE,
+                initial = note,
+                onDismiss = { noteItemRel = null },
+                onConfirm = { value ->
+                    noteItemRel = null
+                    scope.launch {
+                        val outcome = controller.updateItemNote(rel, value)
+                        message = if (outcome == DesktopAppController.Outcome.Saved) {
+                            DesktopStrings.MSG_ITEM_SAVED
+                        } else {
+                            DesktopStrings.MSG_ITEM_ACTION_FAILED
+                        }
+                    }
+                },
+            )
+        }
+
+        if (showGroupItemDialog) {
+            NameDialog(
+                title = DesktopStrings.GROUP_INTO_ITEM,
+                initial = "",
+                onDismiss = { showGroupItemDialog = false },
+                onConfirm = { raw ->
+                    showGroupItemDialog = false
+                    val sources = controller.selectedPhotoRels.value.toList()
+                    scope.launch {
+                        val (created, outcome) = controller.groupPhotosIntoItem(folderRel, raw, sources)
+                        message = when {
+                            created != null && outcome == DesktopAppController.Outcome.Created ->
+                                DesktopStrings.MSG_ITEM_CREATED
+                            outcome == DesktopAppController.Outcome.BlankName ->
+                                DesktopStrings.MSG_ERROR_BLANK_NAME
+                            else -> DesktopStrings.MSG_ITEM_ACTION_FAILED
+                        }
+                        controller.clearSelection()
+                    }
+                },
+            )
+        }
+
+        if (showAddToItemPicker) {
+            FolderPickerDialog(
+                title = DesktopStrings.ADD_TO_ITEM,
+                choices = controller.itemChoices(),
+                emptyMessage = DesktopStrings.NO_ITEMS_TO_ADD_TO,
+                onDismiss = { showAddToItemPicker = false },
+                onPick = { choice ->
+                    showAddToItemPicker = false
+                    val sources = controller.selectedPhotoRels.value.toList()
+                    scope.launch {
+                        when (controller.addPhotoToItem(choice.relPath, sources)) {
+                            is DesktopAppController.ItemAddOutcome.Success ->
+                                message = DesktopStrings.MSG_ITEM_SAVED
+                            else -> message = DesktopStrings.MSG_ITEM_ADD_PHOTO_FAILED
+                        }
+                        controller.clearSelection()
                     }
                 },
             )
@@ -897,7 +1194,7 @@ fun App(controller: DesktopAppController) {
                 onSave = { description, note ->
                     scope.launch {
                         val outcome = controller.importPendingPhoto(
-                            folderRel,
+                            importTargetRel ?: folderRel,
                             description,
                             note,
                             force = head.duplicateOf != null,
@@ -905,6 +1202,7 @@ fun App(controller: DesktopAppController) {
                         message = when (outcome) {
                             DesktopAppController.Outcome.Saved ->
                                 if (controller.pendingQueue.value.isEmpty()) {
+                                    importTargetRel = null
                                     DesktopStrings.MSG_IMPORT_DONE
                                 } else {
                                     DesktopStrings.MSG_PHOTO_ADDED
@@ -919,6 +1217,7 @@ fun App(controller: DesktopAppController) {
                 onSkipDuplicate = { controller.skipPendingImport() },
                 onCancel = {
                     controller.discardPendingImport()
+                    importTargetRel = null
                 },
             )
         }
@@ -1050,14 +1349,16 @@ private fun TopBar(
     }
 }
 
-/** The action strip: Up / Import / Add container, plus the storage line. */
+/** The action strip: Up / Import / Add container / Add element, plus the storage line. */
 @Composable
 private fun ActionBar(
     folderRel: String,
     rootPath: String,
+    itemOpen: Boolean,
     onUp: () -> Unit,
     onImport: () -> Unit,
     onAddContainer: () -> Unit,
+    onAddItem: () -> Unit,
 ) {
     Row(
         modifier = Modifier
@@ -1065,17 +1366,25 @@ private fun ActionBar(
             .padding(horizontal = 12.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (folderRel.isNotEmpty()) {
+        if (folderRel.isNotEmpty() || itemOpen) {
             TextButton(onClick = onUp) { Text(DesktopStrings.UP) }
         }
-        if (folderRel.isNotEmpty()) {
-            Button(onClick = onImport) { Text(DesktopStrings.IMPORT_PHOTOS) }
+        if (!itemOpen) {
+            if (folderRel.isNotEmpty()) {
+                Button(onClick = onImport) { Text(DesktopStrings.IMPORT_PHOTOS) }
+                Spacer(Modifier.width(8.dp))
+            }
+            Button(onClick = onAddContainer) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(DesktopStrings.ADD_CONTAINER)
+            }
             Spacer(Modifier.width(8.dp))
-        }
-        Button(onClick = onAddContainer) {
-            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(DesktopStrings.ADD_CONTAINER)
+            Button(onClick = onAddItem) {
+                Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(DesktopStrings.NEW_ITEM)
+            }
         }
         Spacer(Modifier.weight(1f))
         Text(
@@ -1112,7 +1421,7 @@ private fun ConflictBanner(count: Int) {
     }
 }
 
-/** Children rows + filtered photo grid for the folder on screen. */
+/** Children rows + element cards + filtered photo grid for the folder on screen. */
 @Composable
 private fun BrowseView(
     controller: DesktopAppController,
@@ -1122,12 +1431,21 @@ private fun BrowseView(
     onQueryChange: (String) -> Unit,
     onScopeChange: (Boolean) -> Unit,
     onOpenContainer: (String) -> Unit,
+    onOpenItem: (String) -> Unit,
     onOpenPhoto: (DesktopIndex.IndexedPhoto, Int) -> Unit,
     onRename: (DesktopIndex.IndexedContainer) -> Unit,
     onMove: (String) -> Unit,
     onSetCover: (String) -> Unit,
     onRemoveCover: (String) -> Unit,
     onDelete: (DesktopIndex.IndexedContainer) -> Unit,
+    onRenameItem: (DesktopIndex.IndexedItem) -> Unit,
+    onMoveItem: (String) -> Unit,
+    onDeleteItem: (DesktopIndex.IndexedItem) -> Unit,
+    onFlattenItem: (DesktopIndex.IndexedItem) -> Unit,
+    onUngroupItem: (DesktopIndex.IndexedItem) -> Unit,
+    onAddPhotosToItem: (String) -> Unit,
+    onGroupIntoItem: () -> Unit,
+    onAddSelectedToItem: () -> Unit,
     dragController: DragController,
     dragOwner: String,
     gridState: LazyGridState,
@@ -1139,6 +1457,7 @@ private fun BrowseView(
 ) {
     val snapshot by controller.snapshot.collectAsState()
     val children = snapshot.containersByParent[folderRel].orEmpty()
+    val items = snapshot.itemsByParent[folderRel].orEmpty()
     val photos = controller.photosIn(folderRel, query, includeSubtree)
     val isRoot = folderRel.isEmpty()
 
@@ -1148,7 +1467,10 @@ private fun BrowseView(
     LaunchedEffect(focus) {
         val current = focus ?: return@LaunchedEffect
         val containerBlock = if (children.isNotEmpty()) 1 + children.size else 0
-        val photoBase = containerBlock + 1 + if (photos.isNotEmpty()) 1 else 0
+        val itemBlock = if (items.isNotEmpty()) 1 + items.size else 0
+        val selectionBlock = if (selectedPhotoRels.isNotEmpty()) 1 else 0
+        val photoBase = containerBlock + itemBlock + 1 + selectionBlock +
+            if (photos.isNotEmpty()) 1 else 0
         val itemIndex = when (current.section) {
             FocusSection.CONTAINERS ->
                 if (children.isNotEmpty()) 1 + current.index else return@LaunchedEffect
@@ -1157,7 +1479,7 @@ private fun BrowseView(
         gridState.animateScrollToItem(itemIndex.coerceAtLeast(0))
     }
 
-    if (children.isEmpty() && photos.isEmpty()) {
+    if (children.isEmpty() && items.isEmpty() && photos.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
                 text = when {
@@ -1218,6 +1540,29 @@ private fun BrowseView(
                 )
             }
         }
+        if (items.isNotEmpty()) {
+            item(key = "items-header", span = { GridItemSpan(maxLineSpan) }) {
+                SectionHeader(DesktopStrings.ITEMS_SECTION)
+            }
+            items(items, key = { item -> item.relPath }) { item ->
+                ItemCard(
+                    controller = controller,
+                    item = item,
+                    dragController = dragController,
+                    dragging = dragController.payload?.kind == DragKind.ITEM &&
+                        dragController.payload?.relPaths?.firstOrNull() == item.relPath,
+                    onOpen = { onOpenItem(item.relPath) },
+                    onAddPhotos = { onAddPhotosToItem(item.relPath) },
+                    onRename = { onRenameItem(item) },
+                    onMove = { onMoveItem(item.relPath) },
+                    onSetCover = { onSetCover(item.relPath) },
+                    onRemoveCover = { onRemoveCover(item.relPath) },
+                    onFlatten = { onFlattenItem(item) },
+                    onUngroup = { onUngroupItem(item) },
+                    onDelete = { onDeleteItem(item) },
+                )
+            }
+        }
         item(key = "search-row", span = { GridItemSpan(maxLineSpan) }) {
             Column {
                 OutlinedTextField(
@@ -1233,6 +1578,25 @@ private fun BrowseView(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 4.dp)) {
                     FilterChip(selected = !includeSubtree, onClick = { onScopeChange(false) }, label = { Text(DesktopStrings.SEARCH_SCOPE_HERE) })
                     FilterChip(selected = includeSubtree, onClick = { onScopeChange(true) }, label = { Text(DesktopStrings.SEARCH_SCOPE_SUBTREE) })
+                }
+            }
+        }
+        if (selectedPhotoRels.isNotEmpty()) {
+            item(key = "selection-actions", span = { GridItemSpan(maxLineSpan) }) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = DesktopStrings.ITEM_SELECTED_COUNT.format(selectedPhotoRels.size),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.width(12.dp))
+                    TextButton(onClick = onGroupIntoItem) { Text(DesktopStrings.GROUP_INTO_ITEM) }
+                    TextButton(onClick = onAddSelectedToItem) { Text(DesktopStrings.ADD_TO_ITEM) }
                 }
             }
         }
@@ -1415,6 +1779,156 @@ private fun ContainerRow(
     }
 }
 
+/**
+ * One element card: a stacked cover, the element name (+conflict and
+ * unexpected-content badges), its photo count (or "No photos yet"), an
+ * "Add photos" shortcut for an empty element and the element action menu.
+ * A press that moves starts an [DragKind.ITEM] drag resolved as a folder
+ * move (items are never drop targets themselves — rule 4).
+ */
+@Composable
+private fun ItemCard(
+    controller: DesktopAppController,
+    item: DesktopIndex.IndexedItem,
+    dragController: DragController,
+    dragging: Boolean,
+    onOpen: () -> Unit,
+    onAddPhotos: () -> Unit,
+    onRename: () -> Unit,
+    onMove: () -> Unit,
+    onSetCover: () -> Unit,
+    onRemoveCover: () -> Unit,
+    onFlatten: () -> Unit,
+    onUngroup: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    var menuExpanded by remember { mutableStateOf(false) }
+    var rowOrigin by remember { mutableStateOf(Offset.Zero) }
+    val coverFile = rememberItemCoverFile(controller, item)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { coordinates -> rowOrigin = coordinates.boundsInRoot().topLeft }
+            .alpha(if (dragging) 0.4f else 1f)
+            .clickable(onClick = onOpen)
+            .pointerInput(item.relPath) {
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        dragController.start(
+                            DragPayload(
+                                relPaths = listOf(item.relPath),
+                                label = item.name,
+                                kind = DragKind.ITEM,
+                            ),
+                        )
+                        dragController.pointer = rowOrigin + offset
+                    },
+                    onDrag = { change, _ ->
+                        dragController.pointer = rowOrigin + change.position
+                    },
+                    onDragEnd = { dragController.drop() },
+                    // Spring-loaded navigation disposes this card mid-gesture;
+                    // the root tracker owns the session from then on.
+                    onDragCancel = { },
+                )
+            }
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        StackedCoverThumbnail(file = coverFile, hasCover = item.hasCover)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = item.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (item.isConflict) {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = DesktopStrings.CONFLICT_BADGE,
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .padding(start = 6.dp)
+                            .size(16.dp),
+                    )
+                }
+                if (item.hasUnexpectedContent) {
+                    Icon(
+                        Icons.Filled.Warning,
+                        contentDescription = DesktopStrings.UNEXPECTED_CONTENT_BADGE,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                        modifier = Modifier
+                            .padding(start = 6.dp)
+                            .size(16.dp),
+                    )
+                }
+            }
+            Text(
+                text = if (item.photoCount == 0) {
+                    DesktopStrings.ITEM_EMPTY
+                } else {
+                    counted(item.photoCount, DesktopStrings.PHOTO_COUNTED_ONE, DesktopStrings.PHOTOS_COUNTED)
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (item.photoCount == 0) {
+            TextButton(onClick = onAddPhotos) { Text(DesktopStrings.ADD_PHOTOS) }
+        }
+        Box {
+            IconButton(onClick = { menuExpanded = true }) {
+                Icon(Icons.Filled.MoreVert, contentDescription = DesktopStrings.ITEM_OPTIONS)
+            }
+            DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                DropdownMenuItem(text = { Text(DesktopStrings.ADD_PHOTOS) }, onClick = { menuExpanded = false; onAddPhotos() })
+                DropdownMenuItem(text = { Text(DesktopStrings.RENAME) }, onClick = { menuExpanded = false; onRename() })
+                DropdownMenuItem(text = { Text(DesktopStrings.MOVE_TO) }, onClick = { menuExpanded = false; onMove() })
+                DropdownMenuItem(text = { Text(DesktopStrings.SET_COVER) }, onClick = { menuExpanded = false; onSetCover() })
+                if (item.hasCover) {
+                    DropdownMenuItem(text = { Text(DesktopStrings.REMOVE_COVER) }, onClick = { menuExpanded = false; onRemoveCover() })
+                }
+                DropdownMenuItem(
+                    text = { Text(DesktopStrings.FLATTEN_ITEM) },
+                    enabled = item.photoCount == 1,
+                    onClick = { menuExpanded = false; onFlatten() },
+                )
+                DropdownMenuItem(text = { Text(DesktopStrings.UNGROUP_ITEM) }, onClick = { menuExpanded = false; onUngroup() })
+                DropdownMenuItem(text = { Text(DesktopStrings.DELETE) }, onClick = { menuExpanded = false; onDelete() })
+            }
+        }
+    }
+}
+
+/**
+ * The element card's stacked cover: two offset rounded cards hinting at a
+ * stack, with the real `_cover.jpg` on top (or the plain stack when the
+ * element has no cover yet — a 1-photo element still shows its tile).
+ */
+@Composable
+private fun StackedCoverThumbnail(file: File?, hasCover: Boolean) {
+    Box(Modifier.size(64.dp)) {
+        Box(
+            Modifier
+                .size(54.dp)
+                .align(Alignment.TopEnd)
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)),
+        )
+        Box(
+            Modifier
+                .size(54.dp)
+                .align(Alignment.BottomStart)
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)),
+        )
+        if (hasCover) {
+            ImageTile(file = file, size = 54.dp, modifier = Modifier.align(Alignment.Center))
+        }
+    }
+}
+
 /** A 1:1 photo tile with a description overlay and the conflict badge. */
 @Composable
 private fun PhotoTile(
@@ -1518,15 +2032,17 @@ private fun PhotoTile(
     }
 }
 
-/** The global search view: a query field over every indexed photo. */
+/** The global search view: a query field over every indexed photo and element. */
 @Composable
 private fun GlobalSearchView(
     controller: DesktopAppController,
     query: String,
     onQueryChange: (String) -> Unit,
     onOpenPhoto: (DesktopIndex.IndexedPhoto) -> Unit,
+    onOpenItem: (DesktopIndex.IndexedItem) -> Unit,
 ) {
     val snapshot by controller.snapshot.collectAsState()
+    val items = remember(query, snapshot) { controller.searchItems(query) }
     val results = remember(query, snapshot) { controller.searchAll(query) }
     Column(Modifier.fillMaxSize()) {
         OutlinedTextField(
@@ -1538,7 +2054,7 @@ private fun GlobalSearchView(
                 .fillMaxWidth()
                 .padding(12.dp),
         )
-        if (query.isNotBlank() && results.isEmpty()) {
+        if (query.isNotBlank() && results.isEmpty() && items.isEmpty()) {
             Text(
                 DesktopStrings.NO_RESULTS,
                 modifier = Modifier.padding(24.dp),
@@ -1546,7 +2062,47 @@ private fun GlobalSearchView(
             )
         }
         LazyColumn(Modifier.fillMaxSize()) {
-            items(results, key = { it.relPath }) { photo ->
+            items(items, key = { "item:${it.relPath}" }) { item ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenItem(item) }
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.size(48.dp)) {
+                        if (item.hasCover) {
+                            ImageTile(file = rememberItemCoverFile(controller, item), size = 48.dp)
+                        } else {
+                            Box(
+                                Modifier
+                                    .size(48.dp)
+                                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(item.name, style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            text = DesktopStrings.ITEMS_SECTION + DesktopStrings.COUNT_SEPARATOR +
+                                if (item.photoCount == 1) {
+                                    DesktopStrings.PHOTO_COUNTED_ONE.format(1)
+                                } else {
+                                    DesktopStrings.PHOTOS_COUNTED.format(item.photoCount)
+                                },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (item.isConflict) {
+                        Icon(Icons.Filled.Warning, contentDescription = DesktopStrings.CONFLICT_BADGE, tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+            items(results, key = { "photo:${it.relPath}" }) { photo ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1852,6 +2408,15 @@ private fun rememberCoverFile(controller: DesktopAppController, container: Deskt
     var file by remember(container.relPath, container.hasCover) { mutableStateOf<File?>(null) }
     LaunchedEffect(container.relPath, container.hasCover) {
         file = if (container.hasCover) controller.coverFile(container.relPath) else null
+    }
+    return file
+}
+
+@Composable
+private fun rememberItemCoverFile(controller: DesktopAppController, item: DesktopIndex.IndexedItem): File? {
+    var file by remember(item.relPath, item.hasCover) { mutableStateOf<File?>(null) }
+    LaunchedEffect(item.relPath, item.hasCover) {
+        file = if (item.hasCover) controller.coverFile(item.relPath) else null
     }
     return file
 }

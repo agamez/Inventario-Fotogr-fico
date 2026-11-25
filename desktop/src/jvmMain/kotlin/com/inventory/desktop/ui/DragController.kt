@@ -10,12 +10,13 @@ import androidx.compose.ui.geometry.Rect
 const val ANCESTOR_TARGET_PREFIX = "ancestor:"
 
 /**
- * What a drag is carrying: photos (default) or a single container folder.
- * A photo drag mirrors Android's [DragPayload] and may carry a WHOLE
- * multi-selection in [DragPayload.relPaths]; a container drag always
- * carries exactly one path.
+ * What a drag is carrying: photos (default), a single container folder or
+ * a single multi-photo element folder. A photo drag mirrors Android's
+ * [DragPayload] and may carry a WHOLE multi-selection in
+ * [DragPayload.relPaths]; a container/item drag always carries exactly one
+ * path.
  */
-enum class DragKind { PHOTO, CONTAINER }
+enum class DragKind { PHOTO, CONTAINER, ITEM }
 
 /** What a drag is carrying: the kind, the relative paths and the ghost label. */
 data class DragPayload(

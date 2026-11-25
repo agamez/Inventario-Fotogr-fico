@@ -15,10 +15,13 @@ import com.inventory.storage.DuplicateGuard
 import com.inventory.storage.ExifEditor
 import com.inventory.storage.Filenames
 import com.inventory.storage.FileBackend
+import com.inventory.storage.ITEM_MARKER
 import com.inventory.storage.ImageHasher
 import com.inventory.storage.ImageThumbnailer
 import com.inventory.storage.ImageTranscoder
 import com.inventory.storage.InventoryReportGenerator
+import com.inventory.storage.ItemMarker
+import com.inventory.storage.ItemMarkerData
 import com.inventory.storage.StorageBackend
 import com.inventory.storage.TrashManager
 import com.inventory.storage.joinRel
@@ -262,6 +265,10 @@ class DesktopAppController(
     fun children(folderRel: String): List<DesktopIndex.IndexedContainer> =
         index.snapshot.value.containersByParent[folderRel].orEmpty()
 
+    /** Multi-photo elements directly inside [folderRel], name-sorted. */
+    fun itemsIn(folderRel: String): List<DesktopIndex.IndexedItem> =
+        index.itemsIn(index.snapshot.value, folderRel)
+
     /** (child containers excluding self, subtree photos) for the row/delete dialogs. */
     fun subtreeCounts(folderRel: String): Pair<Int, Int> =
         index.snapshot.value.subtreeCounts[folderRel] ?: (0 to 0)
@@ -273,6 +280,16 @@ class DesktopAppController(
     /** Global search over every indexed photo. */
     fun searchAll(query: String): List<DesktopIndex.IndexedPhoto> =
         index.searchAll(index.snapshot.value, query)
+
+    /** Global search over element names and marker notes. */
+    fun searchItems(query: String): List<DesktopIndex.IndexedItem> =
+        index.searchItems(index.snapshot.value, query)
+
+    /** Every element (for the "add to element" picker), path-sorted. */
+    fun itemChoices(): List<FolderChoice> =
+        index.snapshot.value.allItems
+            .sortedBy { it.relPath.lowercase(Locale.getDefault()) }
+            .map { item -> FolderChoice(item.relPath, labelOf(item.relPath)) }
 
     /**
      * Move-picker targets: every indexed folder plus the storage root
@@ -385,6 +402,16 @@ class DesktopAppController(
                 if (payload.relPaths.isEmpty()) return false
                 movePhotosTo(payload.relPaths, destination) == Outcome.Moved
             }
+
+            DragKind.ITEM -> {
+                val source = payload.relPaths.firstOrNull()?.trimEnd('/') ?: return false
+                if (source.isEmpty()) return false
+                if (destination == source || destination.startsWith("$source/")) return false
+                // Items never accept drops and never nest (rule 4); the
+                // controller op refuses an item destination, and a drop onto
+                // the item's own parent is a no-op.
+                moveItem(source, destination) == Outcome.Moved
+            }
         }
     }
 
@@ -398,6 +425,272 @@ class DesktopAppController(
         index.rebuild()
         _trashEntries.value = trashManager.listEntries()
         Outcome.Deleted
+    }
+
+    // endregion
+
+    // region items (multi-photo elements)
+
+    /** Result of adding existing photos to an element (see [addPhotoToItem]). */
+    sealed interface ItemAddOutcome {
+        /** [moved] photos now live in the item at [itemRel]. */
+        data class Success(val itemRel: String, val moved: Int) : ItemAddOutcome
+
+        /** The target is neither an item nor a single-photo element file. */
+        data object NotFound : ItemAddOutcome
+
+        /** Nothing moved (sources vanished, or the promotion could not complete). */
+        data object NoPhotosMoved : ItemAddOutcome
+    }
+
+    /**
+     * The parsed `_item.json` marker of [folderRel], or null when the
+     * folder carries none, its payload is corrupt or it is a foreign
+     * marker. Never throws on bad content.
+     */
+    suspend fun readItemMarker(folderRel: String): ItemMarkerData? =
+        withContext(Dispatchers.IO) { readMarker(folderRel) }
+
+    /** True when [folderRel] is a multi-photo element (a valid marker). */
+    suspend fun isItem(folderRel: String): Boolean = readItemMarker(folderRel) != null
+
+    /**
+     * Creates an EMPTY element under [parentRel]: a collision-suffixed new
+     * folder carrying `_item.json` with the optional [note]. Elements never
+     * nest (rule 4), so a marked parent refuses the creation. A failed
+     * marker write rolls the folder back, leaving disk untouched.
+     */
+    suspend fun createItem(
+        parentRel: String,
+        rawName: String,
+        note: String? = null,
+    ): Pair<String?, Outcome> {
+        val name = rawName.trim()
+        if (name.isEmpty()) return null to Outcome.BlankName
+        return withContext(Dispatchers.IO) {
+            val parent = parentRel.trimEnd('/')
+            if (parent.isNotEmpty() && readMarker(parent) != null) {
+                return@withContext null to Outcome.Failed
+            }
+            val created = runCatching { backend.createFolder(parent, Filenames.sanitize(name)) }
+                .getOrNull() ?: return@withContext null to Outcome.Failed
+            val marker = ItemMarker.writeItemMarker(note?.trim()?.ifEmpty { null })
+            runCatching { backend.writePhotoBytes(joinRel(created, ITEM_MARKER), marker) }
+                .onFailure {
+                    backend.deleteFolderRecursive(created)
+                    return@withContext null to Outcome.Failed
+                }
+            index.rebuild()
+            created to Outcome.Created
+        }
+    }
+
+    /**
+     * Rewrites the element note in `_item.json` (atomic replace through the
+     * backend's aux write). A blank note drops the field; a non-item or a
+     * failed write reports [Outcome.Failed] with disk untouched.
+     */
+    suspend fun updateItemNote(itemRel: String, rawNote: String?): Outcome = withContext(Dispatchers.IO) {
+        val rel = itemRel.trimEnd('/')
+        if (rel.isEmpty() || readMarker(rel) == null) return@withContext Outcome.Failed
+        val marker = ItemMarker.writeItemMarker(rawNote?.trim()?.ifEmpty { null })
+        runCatching { backend.writePhotoBytes(joinRel(rel, ITEM_MARKER), marker) }
+            .onFailure { return@withContext Outcome.Failed }
+        index.rebuild()
+        Outcome.Saved
+    }
+
+    /** Renames the element folder at [itemRel]; returns the ACTUAL resulting relPath. */
+    suspend fun renameItem(itemRel: String, rawName: String): Pair<String?, Outcome> {
+        val name = rawName.trim()
+        if (name.isEmpty()) return null to Outcome.BlankName
+        return withContext(Dispatchers.IO) {
+            if (readMarker(itemRel) == null) return@withContext null to Outcome.Failed
+            val actual = runCatching { backend.renameFolder(itemRel, Filenames.sanitize(name)) }
+                .getOrNull() ?: return@withContext null to Outcome.Failed
+            index.rebuild()
+            actual to Outcome.Saved
+        }
+    }
+
+    /**
+     * Moves the element folder at [itemRel] under [newParentRel]. Elements
+     * never accept drops and never nest (rule 4), so an item destination —
+     * or the element's own subtree — refuses the move without touching
+     * disk. A move onto its current parent is a no-op success.
+     */
+    suspend fun moveItem(itemRel: String, newParentRel: String): Outcome {
+        val source = itemRel.trimEnd('/')
+        val parentRel = newParentRel.trimEnd('/')
+        if (source.isEmpty()) return Outcome.Failed
+        if (parentRel == source || parentRel.startsWith("$source/")) return Outcome.InvalidMoveTarget
+        if (parentOf(source) == parentRel) return Outcome.Moved
+        return withContext(Dispatchers.IO) {
+            if (readMarker(source) == null) return@withContext Outcome.Failed
+            if (parentRel.isNotEmpty() && readMarker(parentRel) != null) {
+                return@withContext Outcome.InvalidMoveTarget
+            }
+            if (!backend.moveFolder(source, parentRel)) return@withContext Outcome.InvalidMoveTarget
+            index.rebuild()
+            Outcome.Moved
+        }
+    }
+
+    /**
+     * "Flatten to a single photo" (rule 3): the element's ONLY photo moves
+     * out into the parent container under the element's name
+     * (collision-suffixed) and the element folder — marker included — is
+     * deleted. Refuses (touching nothing) unless exactly one photo remains
+     * inside; degrading 2+ photos is never automatic.
+     */
+    suspend fun flattenItem(itemRel: String): Outcome = withContext(Dispatchers.IO) {
+        val source = itemRel.trimEnd('/')
+        if (source.isEmpty() || readMarker(source) == null) return@withContext Outcome.Failed
+        val photos = backend.listPhotos(source)
+        if (photos.size != 1) return@withContext Outcome.Failed
+        val photo = photos.single()
+        val extension = photo.name.substringAfterLast('.', "jpg").ifEmpty { "jpg" }
+        val parentRel = parentOf(source)
+        val bytes = backend.readPhotoBytes(photo.relPath) ?: return@withContext Outcome.Failed
+        val targetName = uniqueNameIn(
+            parentRel,
+            Filenames.sanitize(nameOf(source)),
+            extension,
+        )
+        val targetRel = joinRel(parentRel, targetName)
+        runCatching { backend.writePhotoBytes(targetRel, bytes) }
+            .onFailure { return@withContext Outcome.Failed }
+        if (!backend.deleteFile(photo.relPath)) {
+            backend.deleteFile(targetRel)
+            return@withContext Outcome.Failed
+        }
+        backend.deleteFolderRecursive(source)
+        index.rebuild()
+        Outcome.Saved
+    }
+
+    /**
+     * Removes the element marker only: the folder degrades to an ordinary
+     * container with its photos (and any ignored subfolders) in place. A
+     * folder that was only ever an element (no photos, subfolders or
+     * cover) is deleted entirely instead of becoming an empty container.
+     */
+    suspend fun ungroupItem(itemRel: String): Outcome = withContext(Dispatchers.IO) {
+        val source = itemRel.trimEnd('/')
+        if (source.isEmpty() || readMarker(source) == null) return@withContext Outcome.Failed
+        if (!backend.deleteFile(joinRel(source, ITEM_MARKER))) return@withContext Outcome.Failed
+        val emptied = backend.listPhotos(source).isEmpty() &&
+            backend.listContainers(source).isEmpty() &&
+            !backend.hasCover(source)
+        if (emptied) backend.deleteFolderRecursive(source)
+        index.rebuild()
+        Outcome.Saved
+    }
+
+    /**
+     * Groups [photoRels] into a NEW element folder called [rawName] inside
+     * [parentRel]: folder + marker first, then the photos move in
+     * byte-identically (never re-encoded, collision-suffixed names). When
+     * no photo could be moved the just-created element is rolled back.
+     */
+    suspend fun groupPhotosIntoItem(
+        parentRel: String,
+        rawName: String,
+        photoRels: List<String>,
+        note: String? = null,
+    ): Pair<String?, Outcome> = withContext(Dispatchers.IO) {
+        val sources = photoRels.map { it.trimEnd('/') }.distinct()
+        if (sources.isEmpty()) return@withContext null to Outcome.Failed
+        val (created, outcome) = createItem(parentRel, rawName, note)
+        if (created == null || outcome != Outcome.Created) {
+            return@withContext null to if (outcome == Outcome.BlankName) Outcome.BlankName else Outcome.Failed
+        }
+        if (movePhotoFiles(sources, created) == 0) {
+            backend.deleteFolderRecursive(created)
+            index.rebuild()
+            return@withContext null to Outcome.Failed
+        }
+        index.rebuild()
+        clearSelection()
+        created to Outcome.Created
+    }
+
+    /**
+     * Adds existing photos to the element at [elementRel]:
+     *
+     * - an item folder receives the photos directly (byte-identical moves);
+     * - a single-photo element — a loose JPEG file — is PROMOTED first
+     *   (rule 2): a `<stem>/` folder carrying the marker is created next
+     *   to it, the existing file moves inside and the new photos follow.
+     *   A promotion whose existing photo cannot move is rolled back.
+     */
+    suspend fun addPhotoToItem(elementRel: String, photoRels: List<String>): ItemAddOutcome =
+        withContext(Dispatchers.IO) {
+            val target = elementRel.trimEnd('/')
+            if (target.isEmpty()) return@withContext ItemAddOutcome.NotFound
+            val additions = photoRels.map { it.trimEnd('/') }.distinct().filter { it != target }
+            if (additions.isEmpty()) return@withContext ItemAddOutcome.NoPhotosMoved
+            if (readMarker(target) != null) {
+                val moved = movePhotoFiles(additions, target)
+                index.rebuild()
+                clearSelection()
+                return@withContext if (moved > 0) {
+                    ItemAddOutcome.Success(target, moved)
+                } else {
+                    ItemAddOutcome.NoPhotosMoved
+                }
+            }
+            if (!isSinglePhotoElement(target)) return@withContext ItemAddOutcome.NotFound
+            val parentRel = parentOf(target)
+            val stem = nameOf(target).substringBeforeLast('.', nameOf(target))
+            val (created, outcome) = createItem(parentRel, stem)
+            if (created == null || outcome != Outcome.Created) {
+                return@withContext ItemAddOutcome.NotFound
+            }
+            if (movePhotoFiles(listOf(target), created) != 1) {
+                backend.deleteFolderRecursive(created)
+                index.rebuild()
+                return@withContext ItemAddOutcome.NoPhotosMoved
+            }
+            val moved = movePhotoFiles(additions, created)
+            index.rebuild()
+            clearSelection()
+            ItemAddOutcome.Success(created, 1 + moved)
+        }
+
+    /**
+     * Promotes [photoRel]'s bytes to the element's `_cover.jpg` (Android's
+     * `setCoverFromPhoto`): the original photo is untouched.
+     */
+    suspend fun setItemCoverFromPhoto(itemRel: String, photoRel: String): Outcome =
+        withContext(Dispatchers.IO) {
+            if (readMarker(itemRel) == null) return@withContext Outcome.Failed
+            val bytes = backend.readPhotoBytes(photoRel) ?: return@withContext Outcome.Failed
+            runCatching { backend.setCover(itemRel, bytes) }
+                .onFailure { return@withContext Outcome.InvalidImage }
+            index.rebuild()
+            Outcome.Saved
+        }
+
+    /** The parsed marker of [rel]; null when absent, corrupt or a foreign payload. */
+    private suspend fun readMarker(rel: String): ItemMarkerData? {
+        val trimmed = rel.trimEnd('/')
+        if (trimmed.isEmpty()) return null
+        return ItemMarker.parse(backend.readAuxFile(joinRel(trimmed, ITEM_MARKER)))
+            ?.takeIf(ItemMarker::isItem)
+    }
+
+    /** True when [rel] is an existing loose JPEG file — the 1-photo element shape. */
+    private suspend fun isSinglePhotoElement(rel: String): Boolean {
+        val name = nameOf(rel)
+        if (name.startsWith(".")) return false
+        val extension = name.substringAfterLast('.', "")
+        if (!extension.equals("jpg", ignoreCase = true) &&
+            !extension.equals("jpeg", ignoreCase = true)
+        ) {
+            return false
+        }
+        return backend.exists(rel)
     }
 
     // endregion
@@ -744,6 +1037,21 @@ class DesktopAppController(
      * collision-suffixing names; returns how many ended up there.
      */
     suspend fun movePhotosTo(rels: List<String>, targetFolderRel: String): Outcome = withContext(Dispatchers.IO) {
+        val moved = movePhotoFiles(rels, targetFolderRel)
+        index.rebuild()
+        // Moving drops any multi-selection (Android's movePhotosTo does the
+        // same); a drag that carried the selection must not leave hidden
+        // paths selected after the files changed parent.
+        clearSelection()
+        if (moved == rels.size) Outcome.Moved else Outcome.InvalidImage
+    }
+
+    /**
+     * The move itself (no index rebuild, no selection reset): copies each
+     * photo byte-identically into the target under a collision-suffixed
+     * name and only then deletes the source. Returns how many landed.
+     */
+    private suspend fun movePhotoFiles(rels: List<String>, targetFolderRel: String): Int {
         var moved = 0
         for (rel in rels) {
             if (parentOf(rel) == targetFolderRel) {
@@ -762,12 +1070,7 @@ class DesktopAppController(
                 continue
             }
         }
-        index.rebuild()
-        // Moving drops any multi-selection (Android's movePhotosTo does the
-        // same); a drag that carried the selection must not leave hidden
-        // paths selected after the files changed parent.
-        clearSelection()
-        if (moved == rels.size) Outcome.Moved else Outcome.InvalidImage
+        return moved
     }
 
     /** The EXIF triple of one photo straight from disk (the edit dialog). */

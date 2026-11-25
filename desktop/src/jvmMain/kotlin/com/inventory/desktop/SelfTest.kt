@@ -4,6 +4,8 @@ import com.inventory.ai.VisionOutcome
 import com.inventory.desktop.exif.DesktopExifEditor
 import com.inventory.desktop.ui.DragKind
 import com.inventory.desktop.ui.DragPayload
+import com.inventory.storage.ITEM_MARKER
+import com.inventory.storage.ItemMarker
 import com.inventory.storage.TrashManager
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
@@ -364,6 +366,275 @@ suspend fun runHeadlessSelfTest(folder: File): Boolean {
         "report CSV carries the Alpha row",
         csvText.contains("B renamed,Alpha item.jpg,Alpha item,has hinge,"),
         csvText,
+    )
+
+    // 17. Multi-photo elements (item folders carrying _item.json): create,
+    //     classify, index their photos, cover, marker round-trip, rename,
+    //     move, the nested/refusal guards, flatten, ungroup, grouping loose
+    //     photos, promotion of a single-photo element, drag resolution and
+    //     trash/restore of the whole folder with the marker intact.
+    val elementsFolder = controller.createFolder("", "Elements").first
+    report.check("element container created", elementsFolder == "Elements", "got $elementsFolder")
+    if (elementsFolder != null) {
+        val (itemRel, itemCreated) = controller.createItem(elementsFolder, "Tornillo", "zinc plated")
+        report.check(
+            "empty element created (folder + marker)",
+            itemCreated == DesktopAppController.Outcome.Created && itemRel == "Elements/Tornillo",
+            "got $itemRel ($itemCreated)",
+        )
+        if (itemRel != null) {
+            val itemPath = itemRel
+        report.check("element marker on disk", File(folder, "$itemPath/$ITEM_MARKER").isFile)
+        report.check("index classifies the folder as an element", controller.isItem(itemPath))
+        report.check(
+            "empty element shows zero photos",
+            controller.itemsIn(elementsFolder).firstOrNull { it.relPath == itemPath }?.photoCount == 0,
+        )
+        report.check("elements never nest", controller.createItem(itemPath, "Nested").first == null)
+
+        // Rule 5: a hand-made subfolder inside an element is ignored for the
+        // count and raises the unexpected-content badge.
+        val ignoredFolder = controller.createFolder(itemPath, "hand made").first
+        val flaggedItem = controller.itemsIn(elementsFolder).firstOrNull { it.relPath == itemPath }
+        report.check(
+            "subfolder inside an element flagged as unexpected content",
+            ignoredFolder != null &&
+                flaggedItem?.let { it.hasUnexpectedContent && it.photoCount == 0 } == true,
+            "got ${flaggedItem?.hasUnexpectedContent}",
+        )
+        if (ignoredFolder != null) {
+            // Rule 4: a marker nested inside an element is plain text to the
+            // scanner — never a second (nested) element row.
+            File(folder, "$ignoredFolder/$ITEM_MARKER").writeBytes(ItemMarker.writeItemMarker())
+            controller.refreshNow()
+            report.check(
+                "marker inside an element is ignored by the scanner (rule 4)",
+                controller.snapshot.value.allItems.none { it.relPath == ignoredFolder } &&
+                    controller.itemsIn(elementsFolder).size == 1,
+            )
+            controller.deleteFolder(ignoredFolder)
+        }
+
+        controller.importPhoto(itemPath, syntheticJpeg(), "Tornillo side A", null)
+        controller.importPhoto(itemPath, syntheticJpeg(), "Tornillo side B", null)
+        val itemPhotos = controller.photosIn(itemPath, "", includeSubtree = false)
+        report.check(
+            "element lists its two photos",
+            itemPhotos.map { it.name } == listOf("Tornillo side A.jpg", "Tornillo side B.jpg"),
+            "got ${itemPhotos.map { it.name }}",
+        )
+        report.check(
+            "photos inside an element stay out of the container grid",
+            controller.photosIn(elementsFolder, "", includeSubtree = false).isEmpty(),
+            "got ${controller.photosIn(elementsFolder, "", includeSubtree = false).map { it.relPath }}",
+        )
+        report.check(
+            "element row carries the photo count",
+            controller.itemsIn(elementsFolder).firstOrNull { it.relPath == itemPath }?.photoCount == 2,
+        )
+
+        val coverOutcome = controller.setItemCoverFromPhoto(itemPath, itemPhotos.first().relPath)
+        report.check(
+            "element cover written from one of its photos",
+            coverOutcome == DesktopAppController.Outcome.Saved && File(folder, "$itemPath/_cover.jpg").isFile,
+            "got $coverOutcome",
+        )
+        report.check(
+            "cover excluded from the element's photo list",
+            controller.photosIn(itemPath, "", includeSubtree = false).size == 2 &&
+                controller.photosIn(itemPath, "", includeSubtree = false).none { it.name == "_cover.jpg" },
+        )
+
+        val noteOutcome = controller.updateItemNote(itemPath, "zinc plated v2")
+        val marker = ItemMarker.parse(controller.backend.readAuxFile("$itemPath/$ITEM_MARKER"))
+        report.check(
+            "element marker round-trips through the FileBackend",
+            noteOutcome == DesktopAppController.Outcome.Saved &&
+                ItemMarker.isItem(marker) &&
+                marker?.note == "zinc plated v2",
+            "got ${marker?.note}",
+        )
+
+        val (renamedItem, renameOutcome) = controller.renameItem(itemPath, "Tornillo renamed")
+        report.check(
+            "element rename keeps the marker and drops the old folder",
+            renameOutcome == DesktopAppController.Outcome.Saved &&
+                renamedItem == "Elements/Tornillo renamed" &&
+                File(folder, "$renamedItem/$ITEM_MARKER").isFile &&
+                !File(folder, itemPath).exists(),
+            "got $renamedItem",
+        )
+
+        val elementsB = controller.createFolder("", "Elements B").first
+        report.check("second element container created", elementsB == "Elements B", "got $elementsB")
+        if (renamedItem != null && elementsB != null) {
+            report.check(
+                "element moved into another container",
+                controller.moveItem(renamedItem, elementsB) == DesktopAppController.Outcome.Moved &&
+                    File(folder, "$elementsB/Tornillo renamed/$ITEM_MARKER").isFile &&
+                    controller.itemsIn(elementsB).map { it.name } == listOf("Tornillo renamed"),
+            )
+            val movedPath = "$elementsB/Tornillo renamed"
+
+            val (hostItem, _) = controller.createItem(elementsB, "Host")
+            report.check(
+                "element move into an element is refused (no nesting)",
+                hostItem != null &&
+                    controller.moveItem(movedPath, hostItem) == DesktopAppController.Outcome.InvalidMoveTarget &&
+                    File(folder, "$movedPath/$ITEM_MARKER").isFile,
+            )
+
+            // Rule 3: flattening is refused while 2 photos remain, then
+            // succeeds at exactly one (the folder + marker disappear).
+            report.check(
+                "flatten refused with two photos",
+                controller.flattenItem(movedPath) == DesktopAppController.Outcome.Failed &&
+                    File(folder, "$movedPath/$ITEM_MARKER").isFile,
+            )
+            controller.photosIn(movedPath, "", includeSubtree = false).firstOrNull()?.let { photo ->
+                controller.deletePhoto(photo.relPath)
+            }
+            report.check(
+                "flatten succeeds at exactly one photo",
+                controller.flattenItem(movedPath) == DesktopAppController.Outcome.Saved &&
+                    !File(folder, movedPath).exists() &&
+                    File(folder, "$elementsB/Tornillo renamed.jpg").isFile,
+            )
+
+            val (ungroupItem, _) = controller.createItem(elementsB, "Ungroup me")
+            if (ungroupItem != null) {
+                controller.importPhoto(ungroupItem, syntheticJpeg(), "Ungroup photo A", null)
+                controller.importPhoto(ungroupItem, syntheticJpeg(), "Ungroup photo B", null)
+                report.check(
+                    "ungroup removes only the marker, keeping the folder and photos",
+                    controller.ungroupItem(ungroupItem) == DesktopAppController.Outcome.Saved &&
+                        !File(folder, "$ungroupItem/$ITEM_MARKER").exists() &&
+                        File(folder, "$ungroupItem/Ungroup photo A.jpg").isFile &&
+                        !controller.isItem(ungroupItem) &&
+                        controller.children(elementsB).any { it.relPath == ungroupItem },
+                )
+            }
+
+            val (emptyItem, _) = controller.createItem(elementsB, "Empty element")
+            report.check(
+                "ungroup of an empty element deletes its folder",
+                emptyItem != null &&
+                    controller.ungroupItem(emptyItem) == DesktopAppController.Outcome.Saved &&
+                    !File(folder, emptyItem).exists(),
+            )
+
+            controller.importPhoto(elementsB, syntheticJpeg(), "Group A", null)
+            controller.importPhoto(elementsB, syntheticJpeg(), "Group B", null)
+            val (groupedItem, groupOutcome) = controller.groupPhotosIntoItem(
+                elementsB,
+                "Grupo",
+                listOf("$elementsB/Group A.jpg", "$elementsB/Group B.jpg"),
+            )
+            report.check(
+                "group photos into a new element",
+                groupOutcome == DesktopAppController.Outcome.Created &&
+                    groupedItem == "$elementsB/Grupo" &&
+                    File(folder, "$elementsB/Grupo/$ITEM_MARKER").isFile &&
+                    controller.photosIn(elementsB + "/Grupo", "", includeSubtree = false).size == 2 &&
+                    !File(folder, "$elementsB/Group A.jpg").exists(),
+                "got $groupedItem",
+            )
+
+            controller.importPhoto(elementsB, syntheticJpeg(), "Suelto", null)
+            controller.importPhoto(elementsB, syntheticJpeg(), "Suelto 2", null)
+            val promotion = controller.addPhotoToItem(
+                "$elementsB/Suelto.jpg",
+                listOf("$elementsB/Suelto 2.jpg"),
+            )
+            report.check(
+                "single-photo element promoted when a second photo is added",
+                promotion is DesktopAppController.ItemAddOutcome.Success &&
+                    promotion.moved == 2 &&
+                    File(folder, "$elementsB/Suelto/$ITEM_MARKER").isFile &&
+                    controller.photosIn("$elementsB/Suelto", "", includeSubtree = false).size == 2,
+                "got $promotion",
+            )
+
+            // Drag & drop: an element payload resolves to a folder move into a
+            // container and is refused when the target is itself an element.
+            val grupo = controller.itemsIn(elementsB).firstOrNull { it.name == "Grupo" }
+            report.check("grouped element present for the drag test", grupo != null)
+            if (grupo != null) {
+                report.check(
+                    "element drag onto an element target is refused",
+                    !controller.dropDrag(
+                        DragPayload(listOf(grupo.relPath), "Grupo", DragKind.ITEM),
+                        grupo.relPath,
+                    ),
+                )
+                report.check(
+                    "element drag moves the whole folder into a container",
+                    controller.dropDrag(
+                        DragPayload(listOf(grupo.relPath), "Grupo", DragKind.ITEM),
+                        elementsFolder,
+                    ) && File(folder, "$elementsFolder/Grupo/$ITEM_MARKER").isFile,
+                )
+            }
+
+            // Rule 9: a multi-photo element is trashed/restored as ONE folder
+            // stamp (the existing "container" kind) and the marker survives.
+            controller.setTrashEnabled(true)
+            val toTrash = controller.itemsIn(elementsB).firstOrNull { it.name == "Suelto" }
+            report.check("element present before the trash test", toTrash != null)
+            if (toTrash != null) {
+                controller.deleteFolder(toTrash.relPath)
+                val trashEntry = controller.trashEntries.value.firstOrNull { it.name == "Suelto" }
+                report.check(
+                    "element trashed as one folder entry",
+                    trashEntry != null && trashEntry.kind == TrashManager.KIND_CONTAINER,
+                    "got ${trashEntry?.kind}",
+                )
+                val stampDir = trashEntry?.let { File(folder, "${TrashManager.TRASH_DIR}/${it.id}") }
+                report.check(
+                    "trash stamp holds the element folder, marker and photos",
+                    stampDir != null &&
+                        File(stampDir, "Suelto/$ITEM_MARKER").isFile &&
+                        File(stampDir, "Suelto/Suelto.jpg").isFile &&
+                        File(stampDir, "Suelto/Suelto 2.jpg").isFile,
+                    "got ${stampDir?.absolutePath}",
+                )
+                val restored = trashEntry?.let { controller.restore(it.id) } ?: false
+                report.check(
+                    "restored element is classified as an element again",
+                    restored &&
+                        controller.itemsIn(elementsB).any { it.name == "Suelto" } &&
+                        File(folder, "$elementsB/Suelto/$ITEM_MARKER").isFile &&
+                        ItemMarker.isItem(
+                            ItemMarker.parse(controller.backend.readAuxFile("$elementsB/Suelto/$ITEM_MARKER")),
+                        ),
+                )
+            }
+            controller.setTrashEnabled(false)
+        }
+    }
+}
+
+    // 18. Disk is truth: a marker created OUTSIDE the app is adopted by the
+    //     next index rebuild, and deleting it demotes the folder back to a
+    //     container. No app write path is involved here.
+    val externalItem = File(folder, "Elements/External")
+    externalItem.mkdirs()
+    File(externalItem, ITEM_MARKER).writeBytes(ItemMarker.writeItemMarker("made outside"))
+    controller.refreshNow()
+    report.check(
+        "externally created marker adopted on rescan",
+        controller.isItem("Elements/External") &&
+            controller.itemsIn("Elements").any {
+                it.relPath == "Elements/External" && it.note == "made outside"
+            },
+        "got ${controller.itemsIn("Elements").map { it.relPath to it.note }}",
+    )
+    File(externalItem, ITEM_MARKER).delete()
+    controller.refreshNow()
+    report.check(
+        "externally removed marker demotes the folder to a container",
+        !controller.isItem("Elements/External") &&
+            controller.children("Elements").any { it.relPath == "Elements/External" },
     )
 
     controller.stop()

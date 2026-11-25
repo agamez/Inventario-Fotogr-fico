@@ -95,6 +95,7 @@ fun FolderPickerDialog(
     choices: List<DesktopAppController.FolderChoice>,
     onDismiss: () -> Unit,
     onPick: (DesktopAppController.FolderChoice) -> Unit,
+    emptyMessage: String = DesktopStrings.NO_FOLDER_TARGETS,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -107,7 +108,7 @@ fun FolderPickerDialog(
             ) {
                 if (choices.isEmpty()) {
                     Text(
-                        DesktopStrings.NO_FOLDER_TARGETS,
+                        emptyMessage,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -122,6 +123,67 @@ fun FolderPickerDialog(
                     )
                     HorizontalDivider()
                 }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(DesktopStrings.CANCEL) }
+        },
+    )
+}
+
+/**
+ * Free-text note dialog for the element's `_item.json` marker: the note is
+ * optional, so an empty field saves as "no note".
+ */
+@Composable
+fun NoteDialog(
+    title: String,
+    initial: String?,
+    onDismiss: () -> Unit,
+    onConfirm: (String?) -> Unit,
+) {
+    var value by remember(title, initial) { mutableStateOf(initial.orEmpty()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            OutlinedTextField(
+                value = value,
+                onValueChange = { value = it },
+                label = { Text(DesktopStrings.NOTE_LABEL) },
+                minLines = 3,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(value.trim().ifEmpty { null }) }) {
+                Text(DesktopStrings.SAVE)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(DesktopStrings.CANCEL) }
+        },
+    )
+}
+
+/** A scrollable generic picker body (used by the element cover picker). */
+@Composable
+fun PickerDialog(
+    title: String,
+    onDismiss: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 360.dp)
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                content()
             }
         },
         confirmButton = {},

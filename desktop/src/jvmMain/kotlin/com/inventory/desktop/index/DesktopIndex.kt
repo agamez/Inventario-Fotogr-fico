@@ -1,8 +1,12 @@
 package com.inventory.desktop.index
 
 import com.inventory.storage.BackendEntry
+import com.inventory.storage.ITEM_MARKER
+import com.inventory.storage.ItemMarker
+import com.inventory.storage.ItemMarkerData
 import com.inventory.storage.PhotoMeta
 import com.inventory.storage.StorageBackend
+import com.inventory.storage.joinRel
 import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -41,6 +45,26 @@ class DesktopIndex(private val backend: StorageBackend) {
     )
 
     /**
+     * One multi-photo element (an item folder carrying `_item.json`).
+     * [photoCount] counts the photos directly inside (the `_cover.jpg` is
+     * excluded by the backend), [note] comes from the marker and
+     * [hasUnexpectedContent] flags subfolders inside it (rule 5: ignored
+     * for counting and never walked). [isConflict] propagates any
+     * synth-conflict marker found on the item, its photos or its ignored
+     * subfolders, exactly like the Android scanner.
+     */
+    data class IndexedItem(
+        val relPath: String,
+        val name: String,
+        val parentRel: String,
+        val note: String?,
+        val photoCount: Int,
+        val hasCover: Boolean,
+        val isConflict: Boolean,
+        val hasUnexpectedContent: Boolean,
+    )
+
+    /**
      * One immutable walk result. [subtreeCounts] maps every folder path to
      * (descendant containers excluding the folder itself, photos in the
      * whole subtree including it) — the numbers the browse rows and the
@@ -49,10 +73,12 @@ class DesktopIndex(private val backend: StorageBackend) {
      */
     data class Snapshot(
         val containersByParent: Map<String, List<IndexedContainer>> = emptyMap(),
+        val itemsByParent: Map<String, List<IndexedItem>> = emptyMap(),
         val photosByParent: Map<String, List<IndexedPhoto>> = emptyMap(),
         val folders: Set<String> = setOf(""),
         val subtreeCounts: Map<String, Pair<Int, Int>> = emptyMap(),
         val allPhotos: List<IndexedPhoto> = emptyList(),
+        val allItems: List<IndexedItem> = emptyList(),
         val conflictCount: Int = 0,
         val builtAt: Long = 0L,
     )
@@ -80,25 +106,33 @@ class DesktopIndex(private val backend: StorageBackend) {
         _scanning.value = true
         try {
             val containers = mutableMapOf<String, MutableList<IndexedContainer>>()
+            val items = mutableMapOf<String, MutableList<IndexedItem>>()
             val photos = mutableMapOf<String, MutableList<IndexedPhoto>>()
             val folders = mutableSetOf("")
             val seenKeys = mutableMapOf<String, String>()
             var conflicts = 0
-            walk("", containers, photos, folders, seenKeys) { conflicts++ }
+            walk("", containers, items, photos, folders, seenKeys) { conflicts++ }
             changeKeys.keys.retainAll(seenKeys.keys)
             parsedMeta.keys.retainAll(seenKeys.keys)
             val sortedContainers = containers.mapValues { (_, rows) ->
                 rows.sortedBy { it.name.lowercase(Locale.getDefault()) }
             }
+            val sortedItems = items.mapValues { (_, rows) ->
+                rows.sortedBy { it.name.lowercase(Locale.getDefault()) }
+            }
             val sortedPhotos = photos.mapValues { (_, rows) ->
                 rows.sortedBy { it.name.lowercase(Locale.getDefault()) }
             }
+            val allPhotos = sortedPhotos.values.flatten()
+                .sortedBy { it.relPath.lowercase(Locale.getDefault()) }
             _snapshot.value = Snapshot(
                 containersByParent = sortedContainers,
+                itemsByParent = sortedItems,
                 photosByParent = sortedPhotos,
                 folders = folders,
-                subtreeCounts = computeSubtreeCounts(folders, sortedContainers, sortedPhotos),
-                allPhotos = sortedPhotos.values.flatten()
+                subtreeCounts = computeSubtreeCounts(folders, sortedContainers, sortedItems, sortedPhotos),
+                allPhotos = allPhotos,
+                allItems = sortedItems.values.flatten()
                     .sortedBy { it.relPath.lowercase(Locale.getDefault()) },
                 conflictCount = conflicts,
                 builtAt = System.currentTimeMillis(),
@@ -111,12 +145,43 @@ class DesktopIndex(private val backend: StorageBackend) {
     private suspend fun walk(
         rel: String,
         containers: MutableMap<String, MutableList<IndexedContainer>>,
+        items: MutableMap<String, MutableList<IndexedItem>>,
         photos: MutableMap<String, MutableList<IndexedPhoto>>,
         folders: MutableSet<String>,
         seenKeys: MutableMap<String, String>,
         onConflict: () -> Unit,
     ) {
         for (entry in backend.listContainers(rel)) {
+            val marker = readItemMarker(entry.relPath)
+            if (marker != null) {
+                // An item folder is a walk leaf (rule 4: items never nest);
+                // its photos are indexed with the item as their parent and
+                // subfolders inside it are ignored for counting but still
+                // flag the row and propagate conflicts.
+                val itemPhotos = backend.listPhotos(entry.relPath)
+                val ignoredFolders = backend.listContainers(entry.relPath)
+                val itemConflict = entry.isConflict ||
+                    itemPhotos.any(BackendEntry::isConflict) ||
+                    ignoredFolders.any(BackendEntry::isConflict)
+                if (itemConflict) onConflict()
+                items.getOrPut(rel) { mutableListOf() }.add(
+                    IndexedItem(
+                        relPath = entry.relPath,
+                        name = entry.name,
+                        parentRel = rel,
+                        note = marker.note,
+                        photoCount = itemPhotos.size,
+                        hasCover = backend.hasCover(entry.relPath),
+                        isConflict = itemConflict,
+                        hasUnexpectedContent = ignoredFolders.isNotEmpty(),
+                    ),
+                )
+                for (photo in itemPhotos) {
+                    if (photo.isConflict) onConflict()
+                    photos.getOrPut(entry.relPath) { mutableListOf() }.add(indexPhoto(photo, seenKeys))
+                }
+                continue
+            }
             if (entry.isConflict) onConflict()
             containers.getOrPut(rel) { mutableListOf() }.add(
                 IndexedContainer(
@@ -127,13 +192,18 @@ class DesktopIndex(private val backend: StorageBackend) {
                 ),
             )
             folders += entry.relPath
-            walk(entry.relPath, containers, photos, folders, seenKeys, onConflict)
+            walk(entry.relPath, containers, items, photos, folders, seenKeys, onConflict)
         }
         for (entry in backend.listPhotos(rel)) {
             if (entry.isConflict) onConflict()
             photos.getOrPut(rel) { mutableListOf() }.add(indexPhoto(entry, seenKeys))
         }
     }
+
+    /** The parsed marker of [rel] when it turns the folder into an item, else null. */
+    private suspend fun readItemMarker(rel: String): ItemMarkerData? =
+        ItemMarker.parse(backend.readAuxFile(joinRel(rel, ITEM_MARKER)))
+            ?.takeIf(ItemMarker::isItem)
 
     /** The photo row for [entry], reusing the cached EXIF triple when unchanged. */
     private suspend fun indexPhoto(entry: BackendEntry, seenKeys: MutableMap<String, String>): IndexedPhoto {
@@ -160,6 +230,7 @@ class DesktopIndex(private val backend: StorageBackend) {
     private fun computeSubtreeCounts(
         folders: Set<String>,
         containers: Map<String, List<IndexedContainer>>,
+        items: Map<String, List<IndexedItem>>,
         photos: Map<String, List<IndexedPhoto>>,
     ): Map<String, Pair<Int, Int>> {
         val result = mutableMapOf<String, Pair<Int, Int>>()
@@ -167,6 +238,9 @@ class DesktopIndex(private val backend: StorageBackend) {
         fun accumulate(rel: String): Pair<Int, Int> = result.getOrPut(rel) {
             var childFolders = 0
             var subtreePhotos = photos[rel]?.size ?: 0
+            // An element's photos live one level "below" the container grid
+            // but still inside its subtree: deleting the container deletes them.
+            for (item in items[rel].orEmpty()) subtreePhotos += item.photoCount
             for (child in containers[rel].orEmpty()) {
                 val (nestedFolders, nestedPhotos) = accumulate(child.relPath)
                 childFolders += 1 + nestedFolders
@@ -177,6 +251,26 @@ class DesktopIndex(private val backend: StorageBackend) {
 
         for (folder in folders) accumulate(folder)
         return result
+    }
+
+    /** Items directly inside [folderRel] (unfiltered, like the Android item section). */
+    fun itemsIn(snapshot: Snapshot, folderRel: String): List<IndexedItem> =
+        snapshot.itemsByParent[folderRel].orEmpty()
+
+    /** Global search over element names and marker notes (name-sorted, capped). */
+    fun searchItems(snapshot: Snapshot, query: String): List<IndexedItem> {
+        val trimmed = query.trim().lowercase(Locale.getDefault())
+        val candidates = if (trimmed.isEmpty()) {
+            snapshot.allItems
+        } else {
+            snapshot.allItems.filter { item ->
+                item.name.lowercase(Locale.getDefault()).contains(trimmed) ||
+                    item.note?.lowercase(Locale.getDefault())?.contains(trimmed) == true
+            }
+        }
+        return candidates
+            .sortedBy { it.name.lowercase(Locale.getDefault()) }
+            .take(MAX_SEARCH_RESULTS)
     }
 
     /** Photos matching [query] in the folder at [folderRel] (or its subtree). */

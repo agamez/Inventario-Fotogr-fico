@@ -14,7 +14,7 @@ object DesktopStrings {
     const val UP = "Up one level"
     const val RESCAN = "Rescan"
     const val SEARCH = "Search"
-    const val SEARCH_HINT = "Search all photos"
+    const val SEARCH_HINT = "Search all photos and elements"
     const val CLOSE_SEARCH = "Close search"
     const val IMPORT_PHOTOS = "Import photos"
     const val ADD_CONTAINER = "Add container"
@@ -23,6 +23,7 @@ object DesktopStrings {
 
     // Sections & rows
     const val CONTAINERS_SECTION = "Containers"
+    const val ITEMS_SECTION = "Elements"
     const val PHOTOS_SECTION = "Photos"
     const val ROOT_FOLDER_LABEL = "Inventory (root)"
     const val MOVE_UP_HERE = "Move up one level"
@@ -33,7 +34,8 @@ object DesktopStrings {
     // Empty states
     const val INVENTORY_EMPTY = "Your inventory is empty.\nClick \"Add container\" to create your first container."
     const val EMPTY_FOLDER = "Nothing here yet.\nAdd a container or import photos."
-    const val NO_RESULTS = "No photos match this search."
+    const val NO_RESULTS = "No photos or elements match this search."
+    const val ITEM_EMPTY = "No photos yet"
 
     // Search scope chips
     const val SEARCH_SCOPE_HERE = "This container"
@@ -66,6 +68,41 @@ object DesktopStrings {
     const val DATE_TAKEN_LABEL = "Date taken"
     const val NO_DATE = "no date"
     const val PHOTO_PATH_LINE = "In: %s"
+
+    // Multi-photo elements (item folders with _item.json) — wording mirrors
+    // Android's item_*/group_* strings.xml additions.
+    const val NEW_ITEM = "New element"
+    const val NEW_EMPTY_ITEM = "New empty element"
+    const val ITEM_FALLBACK_TITLE = "Element"
+    const val ITEM_OPTIONS = "Element options"
+    const val ITEM_BACK = "Back to the container"
+    const val ADD_PHOTOS = "Add photos"
+    const val SET_AS_COVER = "Set as cover"
+    const val ITEM_COVER_PHOTO_TITLE = "Set cover from photo…"
+    const val FLATTEN_ITEM = "Flatten to a single photo"
+    const val UNGROUP_ITEM = "Ungroup element"
+    const val ITEM_NOTE_ADD = "Add note"
+    const val EDIT_NOTE = "Edit note"
+    const val GROUP_INTO_ITEM = "Group into element"
+    const val ADD_TO_ITEM = "Add to element…"
+    const val NO_ITEMS_TO_ADD_TO = "There are no elements yet. Group photos into one first."
+    const val ITEM_SELECTED_COUNT = "%1\$d selected"
+    const val UNEXPECTED_CONTENT_BADGE = "Contains folders that are ignored"
+    const val ITEM_DELETE_TITLE = "Delete element?"
+    const val ITEM_DELETE_MESSAGE =
+        "\"%1\$s\" and its %2\$d photos will be moved to the trash and auto-purged after 30 days."
+    const val ITEM_DELETE_MESSAGE_PERMANENT =
+        "\"%1\$s\" and its %2\$d photos will be permanently deleted. This cannot be undone."
+    const val MSG_ITEM_CREATED = "Element created"
+    const val MSG_ITEM_SAVED = "Element saved"
+    const val MSG_ITEM_MOVED = "Element moved"
+    const val MSG_ITEM_DELETED = "Element deleted"
+    const val MSG_ITEM_FLATTENED = "Flattened to a single photo"
+    const val MSG_ITEM_UNGROUPED = "Element ungrouped"
+    const val MSG_ITEM_ADD_PHOTO_FAILED = "Could not add the photos to this element"
+    const val MSG_ITEM_ACTION_FAILED = "The action could not be completed"
+    const val MSG_ITEM_FLATTEN_NEEDS_ONE = "Flattening needs exactly one photo"
+
 
     // Full-screen photo viewer
     const val VIEWER_EDIT = "Edit"
