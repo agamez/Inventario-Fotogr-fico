@@ -164,6 +164,9 @@ private class ModeRoutingBackend(
     override suspend fun readPhotoBytes(relPath: String): ByteArray? =
         onActive(null) { it.readPhotoBytes(relPath) }
 
+    override suspend fun readAuxFile(relPath: String): ByteArray? =
+        onActive(null) { it.readAuxFile(relPath) }
+
     override suspend fun writePhotoBytes(relPath: String, bytes: ByteArray): Unit =
         onActive(Unit) { it.writePhotoBytes(relPath, bytes) }
 

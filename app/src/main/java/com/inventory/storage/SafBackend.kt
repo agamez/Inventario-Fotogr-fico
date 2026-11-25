@@ -231,6 +231,16 @@ class SafBackend @Inject constructor(
         runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
     }
 
+    /**
+     * Any small non-photo file (the `_item.json` marker, `.origin` stamps)
+     * through the same resolution memo and stream read as
+     * [readPhotoBytes]; null when the document is gone or unreadable.
+     */
+    override suspend fun readAuxFile(relPath: String): ByteArray? = withContext(Dispatchers.IO) {
+        val uri = uriFor(relPath) ?: return@withContext null
+        runCatching { resolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+    }
+
     override suspend fun lastModifiedAndSize(rel: String): Pair<Long, Long>? =
         withContext(Dispatchers.IO) {
             val uri = uriFor(rel) ?: return@withContext null
@@ -269,11 +279,15 @@ class SafBackend @Inject constructor(
                 uriFor(relPath)?.let { stale ->
                     runCatching { DocumentsContract.deleteDocument(resolver, stale) }
                 }
+                val finalName = nameOf(relPath)
+                val extension = finalName.substringAfterLast('.', "")
+                val tempName = ".pending-${UUID.randomUUID()}" +
+                    if (extension.isEmpty()) "" else ".$extension"
                 val tempUri = DocumentsContract.createDocument(
                     resolver,
                     parentUri,
-                    "image/jpeg",
-                    ".pending-${UUID.randomUUID()}.jpg",
+                    mimeTypeFor(finalName),
+                    tempName,
                 ) ?: throw IOException("Could not stage $relPath")
                 try {
                     resolver.openOutputStream(tempUri, "wt")?.use { it.write(bytes) }
@@ -298,6 +312,19 @@ class SafBackend @Inject constructor(
         withContext(Dispatchers.IO) {
             require(bytes.isNotEmpty() && looksLikeJpeg(bytes)) { "Cover image is empty or not a JPEG." }
             writePhotoBytes(joinRel(folderRel, COVER_FILE_NAME), bytes)
+        }
+
+    /**
+     * Creation mime for [name], derived from its extension: photos are
+     * `image/jpeg`, the `_item.json` marker is `application/json` (some
+     * providers refuse to create or rename a document whose extension
+     * disagrees with the requested mime). Anything else is opaque bytes.
+     */
+    private fun mimeTypeFor(name: String): String =
+        when (name.substringAfterLast('.', "").lowercase(Locale.US)) {
+            "jpg", "jpeg" -> "image/jpeg"
+            "json" -> "application/json"
+            else -> "application/octet-stream"
         }
 
     override suspend fun removeCover(folderRel: String): Unit = withContext(Dispatchers.IO) {

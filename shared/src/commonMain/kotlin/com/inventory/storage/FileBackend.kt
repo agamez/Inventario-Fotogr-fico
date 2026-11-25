@@ -85,6 +85,11 @@ class FileBackend(
         runCatching { if (file.isFile) file.readBytes() else null }.getOrNull()
     }
 
+    override suspend fun readAuxFile(relPath: String): ByteArray? = withContext(Dispatchers.IO) {
+        val file = fileOf(relPath)
+        runCatching { if (file.isFile) file.readBytes() else null }.getOrNull()
+    }
+
     override suspend fun writePhotoBytes(relPath: String, bytes: ByteArray): Unit =
         withContext(Dispatchers.IO) {
             val target = fileOf(relPath)

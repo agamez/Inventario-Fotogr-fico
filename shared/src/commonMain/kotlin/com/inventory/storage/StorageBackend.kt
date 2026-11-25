@@ -45,6 +45,13 @@ interface StorageBackend {
     suspend fun readPhotoBytes(relPath: String): ByteArray?
 
     /**
+     * Raw bytes of a small auxiliary file inside the inventory (the
+     * `_item.json` marker, `.origin` stamps): a plain file read, never an
+     * image decode; null when the entry is gone or unreadable.
+     */
+    suspend fun readAuxFile(relPath: String): ByteArray?
+
+    /**
      * Creates or replaces the entry at [relPath] with [bytes], atomically
      * (temp + rename semantics); throws [java.io.IOException] on failure.
      */
