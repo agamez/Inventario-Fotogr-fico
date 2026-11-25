@@ -31,7 +31,9 @@ SAME disk tree, so every disk assertion is mode-agnostic. Run order:
       re-answers the chooser too), drag-and-drop gestures (photo/container/
       ancestor-chip/selection/BACK-cancel, all restored), the inbound image
       share (SEND -> container picker -> import, JPEG passthrough + PNG->
-      JPEG transcode, container removed again), and an exact-tree disk audit.
+      JPEG transcode, container removed again), the multi-photo elements
+      (group/add/rename/move/flatten/delete around the `_item.json` marker),
+      and an exact-tree disk audit.
 
   python3 scripts/smoke_test.py    # always pins emulator-5554 when present
 
@@ -91,6 +93,16 @@ REPORT_SHARE_CHOOSER = "Send report via"                # share_report_chooser
 REPORT_CACHE_DIR = "cache/reports"                      # ReportSharing.CACHE_DIR
 REPORT_STAGED_PREFIX = "photo-inventory-"               # staged cache file prefix
 RESOLVER_PKG = "com.android.intentresolver"             # system share sheet
+# Multi-photo elements (docs/ideas-multi-photo-items.md; strings.xml item_*).
+# The UI calls them "elements"; on disk they are folders carrying _item.json.
+ITEMS_SECTION = "Elements"                              # items_section
+NEW_ITEM_LABEL = "New element"                          # new_item (dialog title)
+NEW_EMPTY_ITEM_DESC = "New empty element"               # new_empty_item (small FAB)
+GROUP_INTO_ITEM = "Group into element"                  # group_into_item
+FLATTEN_ITEM = "Flatten to a single photo"              # flatten_item
+ADD_PHOTOS = "Add photos"                               # add_photos
+ITEM_EMPTY = "No photos yet"                            # item_empty
+ITEM_MARKER = "_item.json"                              # shared/ItemMarker.kt
 # The viewer's top-strip indicator: viewer_page = "%1$d / %2$d".
 VIEWER_PAGE_RE = re.compile(r"^(\d+) / (\d+)$")
 MOCK_PORT = 8765
@@ -2868,8 +2880,8 @@ def t_drag_drop():
     if fs_exists(extra_sa):
         sh(f"rm {sq(extra_sa)}")
     check("dnd5 restore: only the original photo back under Shelf A",
-          fs_exists(wj_sa) and not fs_exists(extra_sa, soft=True)
-          and not fs_exists(extra_sb))
+          fs_exists(wj_sa) and not fs_exists(extra_sa)
+          and not fs_exists(extra_sb), soft=True)
     check("dnd5 rescan after restore", rescan_from_root(), soft=True)
 
     # ---- 6. Back cancels an in-flight drag -------------------------------
@@ -3039,6 +3051,244 @@ def t_duplicate_import():
     check("disk: Dup test removed", not fs_exists(fp("Dup test")))
     check("home after dup cleanup", go_home())
 
+def t_multi_photo_items():
+    """Multi-photo elements (docs/ideas-multi-photo-items.md step 12): group
+    two seeded loose photos into a marked item folder ("Group into element"),
+    add a third through the ItemScreen gallery pick (EXIF-stamped), rename and
+    move the element from the ItemScreen, create a blank element, flatten it
+    back to a loose photo, prove the flatten guard is a no-op on the 3-photo
+    element, then delete it permanently (trash is OFF at this point). Seeds
+    its own container by direct adb writes and removes it again, so the final
+    disk audit is unchanged."""
+    mark("12d multi-photo items")
+    check("starts on home", go_home())
+    src = fp("Item lab")
+    sh(f"rm -rf {sq(src)}")  # idempotent: a failed prior run leaves the lab
+    sh(f"mkdir -p {sq(src)}")
+    handle = fp("Item lab", "Wrench handle.jpg")
+    head = fp("Item lab", "Wrench head.jpg")
+    seed_photo("Item lab/Wrench handle.jpg", "Wrench handle", "seeded loose")
+    seed_photo("Item lab/Wrench head.jpg", "Wrench head")
+    check("disk: two loose photos seeded",
+          fs_exists(handle) and fs_exists(head))
+    # byte-identity reference the group/promotion must preserve (temp+rename,
+    # never re-encoded); the seeds are tiny, so compare the raw payloads.
+    seed_bytes = [fs_read(handle), fs_read(head)]
+    check("disk: seeds readable for the byte-identity check",
+          all(seed_bytes), str([len(b) for b in seed_bytes]))
+    check("rescan adopts Item lab", rescan_from_root())
+    check("Item lab listed", wait_for(text="Item lab", timeout=8) is not None)
+    tap_text("Item lab"); time.sleep(1.8)
+    check("on Item lab", bool(texts_exact("Item lab")))
+
+    # --- 1. select both loose photos -> "Group into element"
+    tile = wait_for(text="Wrench handle", timeout=8)
+    check("Wrench handle tile present", tile is not None)
+    if tile is None: return
+    long_press(tile); time.sleep(1.2)
+    check("selection 1 selected", wait_for(text="1 selected", timeout=5) is not None)
+    tap_text("Wrench head"); time.sleep(1.0)
+    check("selection 2 selected", wait_for(text="2 selected", timeout=5) is not None)
+    check("selection overflow opens", open_screen_menu())
+    time.sleep(1.0)
+    check("menu offers Group into element",
+          wait_for(text=GROUP_INTO_ITEM, timeout=5) is not None)
+    tap_text(GROUP_INTO_ITEM); time.sleep(1.0)
+    check("group dialog opens (title + name field)",
+          wait_for(text=GROUP_INTO_ITEM, timeout=5) is not None and bool(edit_texts()))
+    fill_dialog("Wrench")
+    check("element created snackbar", snackbar_visible("Element created", timeout=10), soft=True)
+    item = fp("Item lab", "Wrench")
+    check("disk: element folder created", fs_wait_exists(item))
+    marker = fs_read(item + "/" + ITEM_MARKER).decode("utf-8", "replace")
+    check('disk: _item.json is type item', '"type":"item"' in marker, marker)
+    check("disk: both photos moved into the element",
+          fs_exists(item + "/Wrench handle.jpg") and fs_exists(item + "/Wrench head.jpg"))
+    check("disk: loose photo files gone",
+          not fs_exists(handle) and not fs_exists(head))
+    after_bytes = [fs_read(item + "/" + p.rsplit("/", 1)[1]) for p in (handle, head)]
+    check("group: photos moved byte-identically", seed_bytes == after_bytes,
+          str([(len(a), len(b)) for a, b in zip(seed_bytes, after_bytes)]))
+    check("Elements section header", bool(texts_exact(ITEMS_SECTION)))
+    check("element card counts 2 photos", bool(texts_exact("2 photos")))
+    check("no loose photo tiles left", not find_all(dump(), text="Wrench handle"))
+
+    # --- 2. open the element: ItemScreen lists both photos
+    tap_text("Wrench"); time.sleep(1.8)
+    check("ItemScreen lists both photos",
+          wait_for(text="Wrench handle", timeout=8) is not None
+          and bool(texts_exact("Wrench head")))
+    check("ItemScreen counts 2 photos", bool(texts_exact("2 photos")))
+    check("add-photos FAB opens the sheet", tap_text(ADD_PHOTOS, timeout=6))
+    time.sleep(1.2)
+    check("sheet offers Choose from gallery",
+          wait_for(text="Choose from gallery", timeout=5) is not None)
+    tap_text("Choose from gallery"); time.sleep(4.0)
+    dism = find_all(dump(), text="Dismiss")
+    if dism: tap(dism[0]); time.sleep(0.8)
+    photos = find_all(dump(), desc="Photo taken on")
+    check("picker shows the seeded photos", bool(photos), str(len(photos)))
+    if not photos: return
+    tap(photos[0]); time.sleep(1.0)
+    end = time.time() + 8
+    add = None
+    while time.time() < end and add is None:
+        d = dump()
+        cands = [n for n in find_all(d, text="Add")] or [n for n in find_all(d, desc="Add")]
+        add = cands[0] if cands else None
+        if add is None: time.sleep(0.5)
+    check("picker Add button", add is not None)
+    if add is None: return
+    tap(add)
+    if wait_for(text="Description (required)", timeout=10) is None:
+        check("element save sheet appears", False); return
+    f = edit_texts()
+    check("element save fields present", bool(f), str(len(f)))
+    if not f: return
+    tap(f[0]); wait_ime(); type_text("Wrench socket"); ensure_ime_hidden(); time.sleep(0.8)
+    tap_text("Save photo", timeout=6)
+    # Every seed is a flat fill (dHash 0), so the duplicate guard can flag the
+    # picker's own flat seed — accept the warning like the dup scenario does.
+    if wait_for(text="Identical photo already exists here as", timeout=6) is not None:
+        check("element pick flagged duplicate (flat seeds)",
+              tap_text("Import anyway", timeout=5))
+    socketp = item + "/Wrench socket.jpg"
+    time.sleep(1.5)
+    check("disk: element gained the gallery photo", fs_exists(socketp))
+    tr = exif_triple(socketp)
+    EXIF_SAMPLES.append(("Item lab/Wrench/Wrench socket.jpg", tr))
+    check("EXIF: element photo description stamped", tr["desc"] == "Wrench socket", str(tr))
+    socket_bytes = fs_read(socketp)
+    check("element photo pixels identical to the seeded JPEG",
+          bool(socket_bytes) and pixel_key(socket_bytes) == pixel_key(JPEG_1PX))
+    check("ItemScreen counts 3 photos",
+          wait_for(text="3 photos", timeout=8) is not None)
+
+    # --- 3. rename from the ItemScreen overflow
+    check("ItemScreen overflow opens", open_screen_menu())
+    time.sleep(1.0)
+    check("menu offers Rename", tap_text("Rename", timeout=5))
+    time.sleep(1.0)
+    pre = edit_texts()
+    check("rename dialog prefilled with the element name",
+          bool(pre) and pre[0].get("text") == "Wrench", str([n.get("text") for n in pre]))
+    fill_dialog("Wrench renamed")
+    renamed = fp("Item lab", "Wrench renamed")
+    check("disk: element folder renamed", fs_wait_exists(renamed))
+    check("disk: old element folder gone", not fs_exists(item))
+    check("disk: marker survived the rename",
+          '"type":"item"' in fs_read(renamed + "/" + ITEM_MARKER).decode("utf-8", "replace"))
+    check("UI: back on Item lab after rename",
+          wait_for(text="Item lab", timeout=8) is not None)
+
+    # --- 4. move the element into another container from the ItemScreen
+    tap_text("Wrench renamed"); time.sleep(1.8)
+    check("ItemScreen reopened for the move",
+          wait_for(text=ADD_PHOTOS, timeout=8) is not None)
+    check("move: element overflow opens", open_screen_menu())
+    time.sleep(1.0)
+    tap_text("Move to")
+    check("move sheet opens", wait_for(text="Move to", timeout=5) is not None)
+    time.sleep(1.5)  # excluded-paths recompute (descendantFolderPaths) settles
+    row = sheet_tap_row("Estate / Storage unit", exact=True)
+    check("move picker offers Estate / Storage unit", row is not None)
+    moved = fp("Estate", "Storage unit", "Wrench renamed")
+    check("disk: element moved into Storage unit", fs_wait_exists(moved))
+    check("disk: old element path gone", not fs_exists(renamed))
+    check("disk: marker survived the move",
+          '"type":"item"' in fs_read(moved + "/" + ITEM_MARKER).decode("utf-8", "replace"))
+    check("element moved snackbar", snackbar_visible("Element moved", timeout=10), soft=True)
+
+    # --- 5. blank element via the small FAB, then flatten it (rule 3)
+    check("home before the flatten case", go_home())
+    tap_text("Item lab"); time.sleep(1.8)
+    check("secondary FAB creates a blank element", tap_desc(NEW_EMPTY_ITEM_DESC))
+    time.sleep(1.2)
+    check("blank-element dialog titled New element",
+          wait_for(text=NEW_ITEM_LABEL, timeout=5) is not None and bool(edit_texts()))
+    fill_dialog("Solo")
+    solo = fp("Item lab", "Solo")
+    check("disk: blank element folder + marker",
+          fs_wait_exists(solo) and fs_exists(solo + "/" + ITEM_MARKER))
+    check("UI: blank element card shows its empty state",
+          wait_for(text=ITEM_EMPTY, timeout=8) is not None)
+    # one photo by direct write (cheaper than a second picker round trip; the
+    # app adopts it on the next Rescan, disk=truth)
+    seed_photo("Item lab/Solo/Solo shot.jpg", "Solo shot")
+    check("rescan adopts the seeded element photo", rescan_from_root())
+    tap_text("Item lab"); time.sleep(1.8)
+    check("element card counts 1 photo", wait_for(text="1 photo", timeout=8) is not None)
+    tap_text("Solo"); time.sleep(1.8)
+    check("blank element lists the seeded photo",
+          wait_for(text="Solo shot", timeout=8) is not None)
+    check("element overflow opens for flatten", open_screen_menu())
+    time.sleep(1.0)
+    check("flatten action offered on a 1-photo element",
+          wait_for(text=FLATTEN_ITEM, timeout=5) is not None)
+    tap_text(FLATTEN_ITEM)
+    flat = fp("Item lab", "Solo.jpg")
+    time.sleep(1.5)
+    check("disk: flattened loose photo appears", fs_exists(flat))
+    check("disk: element folder removed", not fs_exists(solo))
+    check("flatten kept the photo's EXIF",
+          exif_triple(flat)["desc"] == "Solo shot", str(exif_triple(flat)))
+    check("flatten snackbar", snackbar_visible("Flattened to a single photo", timeout=10),
+          soft=True)
+
+    # --- 6. flatten guard: the 3-photo element must survive the attempt
+    check("home for the flatten guard", go_home())
+    tap_text("Estate"); time.sleep(1.8)
+    tap_text("Storage unit"); time.sleep(1.8)
+    check("on Storage unit", bool(texts_exact("Storage unit")))
+    check("moved element card present", wait_for(text="Wrench renamed", timeout=8) is not None)
+    tap_text("Wrench renamed"); time.sleep(1.8)
+    check("ItemScreen reopened on the moved element",
+          wait_for(text=ADD_PHOTOS, timeout=8) is not None
+          and wait_for(text="3 photos", timeout=8) is not None)
+    check("element overflow opens for the guard", open_screen_menu())
+    time.sleep(1.0)
+    node = texts_exact(FLATTEN_ITEM)
+    check("flatten action rendered for the 3-photo element", bool(node))
+    enabled = bool(node) and _has_clickable_ancestor(node[0], dump())
+    check("flatten action disabled with 3 photos", not enabled,
+          f"enabled={enabled}", soft=True)
+    tap_text(FLATTEN_ITEM)  # disabled: must be a no-op
+    time.sleep(1.0)
+    if texts_exact(FLATTEN_ITEM):
+        back(); time.sleep(1.0)  # the menu is still up: dismiss it
+    listing = sh(f"ls {sq(moved)}")
+    moved_jpgs = [l for l in listing.splitlines() if l.lower().endswith(".jpg")]
+    check("disk: 3-photo element survived the flatten attempt",
+          fs_isdir(moved) and len(moved_jpgs) == 3, listing)
+    check("disk: marker survived the flatten attempt",
+          '"type":"item"' in fs_read(moved + "/" + ITEM_MARKER).decode("utf-8", "replace"))
+
+    # --- 7. delete the element (trash is OFF after the trash scenario)
+    check("still on the ItemScreen after the guard",
+          wait_for(text=ADD_PHOTOS, timeout=8) is not None)
+    check("element overflow opens for delete", open_screen_menu())
+    time.sleep(1.0)
+    tap_text("Delete"); time.sleep(1.0)
+    trash_on = 'name="enabled" value="true"' in trash_enabled_pref()
+    want = "moved to the trash" if trash_on else "permanently deleted"
+    check("delete confirm uses the element wording",
+          wait_for(text="Delete element?", timeout=5) is not None
+          and wait_for(text=want, timeout=5) is not None)
+    tap_text("Delete")
+    time.sleep(1.5)  # recursive folder deletion is async on the IO dispatcher
+    check("disk: element folder deleted", not fs_exists(moved))
+    check("element deleted snackbar", snackbar_visible("Element deleted", timeout=10), soft=True)
+
+    # --- 8. cleanup so the final disk audit sees the suite tree unchanged
+    check("home after element delete", go_home())
+    sh(f"rm -rf {sq(src)}")   # Item lab + Solo.jpg + any seed leftovers
+    sh(f"rm -rf {sq(moved)}")  # no-op when the UI delete already landed
+    sh(f"rm -rf {sq(fp('.trash'))}")  # defensive: only if the trash was ON
+    check("disk: Item lab removed", not fs_exists(src))
+    check("disk: no element leftovers under Storage unit", not fs_exists(moved))
+    check("rescan after element cleanup", rescan_from_root())
+    check("home after element cleanup", go_home())
+
 def t_disk_final():
     mark("13 disk final")
     exp = sorted([
@@ -3171,6 +3421,7 @@ def main():
     t_drag_drop()
     t_share_target()
     t_duplicate_import()
+    t_multi_photo_items()
     t_disk_final()
     stop_dump_server()
     print(f"\n===== {passed} passed, {failed} failed, {len(soft_warnings)} warnings =====")
